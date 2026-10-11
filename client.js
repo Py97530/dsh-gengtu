@@ -751,10 +751,19 @@ window.__ModuleLoader__.load({
       const doDelete = async (m) => {
         try {
           const res = await apiPost({ op: 'delete', path: m.path })
-          setNotice(res && res.ok ? '已删除' : '删除失败: ' + (res && res.error || ''))
-          await load(q, tagFilter)
+          if (res && res.ok) {
+            // [patch-dsh-meme-window] 删一张就走全量 load() 的话，整库的行和缩略图会一起重来一遍
+            // （本机实测拉满 979 张 ≈141MB / 5.6 秒随机读），删完那几秒整机卡就是这么来的。这里只摘掉这一格。
+            setMemes((rows) => rows.filter((x) => x.path !== m.path))
+            setTotal((n) => Math.max(0, (Number(n) || 0) - 1))
+            setNotice('已删除')
+          } else {
+            setNotice('删除失败: ' + (res && res.error || ''))
+            await load(q, tagFilter)
+          }
         } catch (error) {
           setNotice('删除失败: ' + (error && error.message ? error.message : String(error)))
+          await load(q, tagFilter)
         }
       }
 
@@ -1333,6 +1342,8 @@ window.__ModuleLoader__.load({
       '.meme-picker .mp-cell:hover{border-color:var(--dsw-alias-brand-primary);transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.15)}',
       // [patch-dsh-meme-seedpick] 种子库挑选模式:选中打勾 + 序号
       '.meme-picker .mp-cell.on{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px var(--dsw-alias-brand-primary) inset}',
+      // [patch-dsh-meme-window] 无限滚动的哨兵行
+      '.meme-picker .mp-more{flex:1 0 100%;text-align:center;padding:10px 0 4px;font-size:12px;color:var(--dsw-alias-text-3);user-select:none}',
       '.meme-picker .mp-pick{position:absolute;top:3px;right:3px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-layer-1);font-size:10px;line-height:16px;text-align:center;font-weight:600}',
       '.meme-picker .mp-seedbar{display:flex;align-items:center;gap:8px;padding:6px 2px 0;font-size:11px}',
       '.meme-picker .mp-seedbar .mp-ok{color:var(--dsw-alias-brand-primary)}',
@@ -1443,10 +1454,16 @@ window.__ModuleLoader__.load({
       const [packs, setPacks] = React.useState([]) // [{id,name,count}] 可切换的表情包组
       const [packId, setPackId] = React.useState('') // '' = 跟随当前激活图库
       const [memeQuery, setMemeQuery] = React.useState('') // [patch-dsh-meme-search] 选择器里的搜索词
+      // [patch-dsh-meme-window] 一次只铺这么多格。库上千张时把整库格子全挂上，
+      // Chromium 会同时发几百个图片请求（本机实测 979 张 ≈ 141MB、5.6 秒磁盘读），
+      // 表现就是「打开面板/删完图，电脑卡几秒」。滚到底再续 72 张，体感一样。
+      const [memeLimit, setMemeLimit] = React.useState(72)
       // [patch-dsh-meme-seedpick] 选择模式:点图 = 勾选,不发消息;勾完导出清单落盘
       const [seedMode, setSeedMode] = React.useState(false)
       const [picked, setPicked] = React.useState([]) // [{path,url,caption,tag}]，数组顺序 = 勾选顺序
       const [seedNote, setSeedNote] = React.useState('')
+
+      React.useEffect(() => { setMemeLimit(72) }, [memeQuery, packId]) // [patch-dsh-meme-window] 换词/换库从头铺
 
       React.useEffect(() => {
         if (!open) return
@@ -1570,10 +1587,12 @@ window.__ModuleLoader__.load({
         return { m, i, total }
       }).filter(Boolean).sort((a, b) => (b.total - a.total) || (a.i - b.i))
       const shownMemes = memeTerms.length === 0 ? memes : memeRanked.map((x) => x.m)
+      // [patch-dsh-meme-window] 只渲染前 memeLimit 张,滚到底自动续
+      const windowedMemes = shownMemes.slice(0, memeLimit)
       const memeQuickWords = ['可爱', '生气', '悲伤', '无语', '开心', '摆烂', '猫', '上班']
 
       // 表情包组 tab:大肥鱼 / 官方 / 导入的包,点选即切换数据源
-      const cells = shownMemes.map((m) => {
+      const cells = windowedMemes.map((m) => {
         const order = picked.findIndex((x) => x.path === m.path)
         return h('div', {
           key: m.path, className: 'mp-cell' + (order >= 0 ? ' on' : ''), 'data-meme-cap': m.caption || m.file_name,
@@ -1604,7 +1623,7 @@ window.__ModuleLoader__.load({
             type: 'button', className: 'mp-tag' + (seedMode ? ' on' : ''), title: '挑选插件自带的种子图库',
             onClick: () => { setSeedMode(!seedMode); setSeedNote('') },
           }, seedMode ? '挑选中 (' + picked.length + ')' : '种子库'),
-          h('span', { className: 'mp-count' }, String(shownMemes.length) + '/' + String(memes.length)),
+          h('span', { className: 'mp-count' }, String(windowedMemes.length) + '/' + String(shownMemes.length) + (shownMemes.length < memes.length ? ' 共' + String(memes.length) : '')),
         ),
         seedMode ? h('div', { className: 'mp-seedbar' },
           h('span', null, '点图勾选，勾 ' + picked.length + ' 张'),
@@ -1622,7 +1641,22 @@ window.__ModuleLoader__.load({
         ),
         shownMemes.length === 0
           ? h('div', { className: 'mp-empty' }, memeTerms.length ? '没搜到，换个词试试' : '没有匹配的表情包')
-          : h('div', { className: 'mp-grid' }, cells),
+          : h('div', { className: 'mp-grid' }, cells, windowedMemes.length < shownMemes.length
+            // [patch-dsh-meme-window] 底下这颗哨兵滚进视野就再铺 72 张(相当于无限滚动)
+            ? h('div', {
+              key: '__more', className: 'mp-more',
+              ref: (el) => {
+                if (!el) return
+                if (typeof IntersectionObserver !== 'function') { setMemeLimit((n) => n + 72); return }
+                if (!el.__dshMemeMoreIO) {
+                  el.__dshMemeMoreIO = new IntersectionObserver((es) => {
+                    if (es.some((e) => e.isIntersecting)) setMemeLimit((n) => n + 72)
+                  }, { rootMargin: '300px 0px' })
+                  el.__dshMemeMoreIO.observe(el)
+                }
+              },
+            }, '加载中…')
+            : null),
       )
     }
 
