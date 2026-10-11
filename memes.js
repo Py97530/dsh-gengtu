@@ -455,7 +455,7 @@ export function registerSendMemeTool(ctx, memes, sendImage, urlPrefix = null) {
       '流程:给 tag/query → 系统返回若干张候选(带 caption,数量用 limit 自己定) → 看描述觉得贴就发;不满意再 search 换一批,还不行就换词/换情绪或回文字。' +
       '情绪字典: ' + MOOD_DICT + '。' +
       (webMode
-        ? '挑中后把 [表情: 描述] 原样写进回复(描述必须抄候选原文,不要带网址)——自己编的描述前端配不上图。'
+        ? '挑中后把候选行整段(含行尾那个 ·码)原样写进回复——描述必须抄候选原文、码不能丢(码是这一行的身份,同一条描述挂着好几张图时全靠它认人);不要带网址,自己编的描述前端配不上图。'
         : '两步:search 看候选,再用 send + path 发出。') +
       '气氛对了就主动发;发完短接,让图自己说话。',
     parameters,
@@ -491,17 +491,31 @@ export function registerSendMemeTool(ctx, memes, sendImage, urlPrefix = null) {
         return { ok: false, message: '没有可用发送通道: ' + absolute }
       }
 
+      // [patch-dsh-meme-pincode] 候选行尾带上这一行的**稳定码**（keywords 里的 `·c1a2b3`，
+      // 由 _plugin_work\add-meme-codes.mjs 写入）。一条 caption 挂多张图时（同一个抖音帖
+      // 的整组图共用一句 desc 当 caption），描述本身分辨不出是哪张 —— 模型只有把码抄回来，
+      // 前端才能发对那张。**码用区间量词 {5,6} 取**：V8 在 `[0-9a-f]` + 精确 `{6}` 上有
+      // 可复现的匹配怪癖（'c0ffee' 配不上），别改回 `{6}`。
+      const codeOf = (m) => {
+        const found = String((m && m.keywords) || '').match(/·(c[0-9a-f]{5,6})(?!\w)/g)
+        return found && found.length ? found[found.length - 1].slice(1) : ''
+      }
+      const mark = (m) => {
+        const caption = (m.caption || m.file_name).slice(0, 80)
+        const code = codeOf(m)
+        return '[表情: ' + caption + ']' + (code ? ' ·' + code : '')
+      }
       const lines = (rows) => rows.map((m, i) => {
         const caption = (m.caption || m.file_name).slice(0, 80)
         return webMode
-          ? (i + 1) + '. [表情: ' + caption + ']'
+          ? (i + 1) + '. ' + mark(m)
           : (i + 1) + '. path=' + m.path + ' | [' + m.tag + '] ' + caption
       })
       const hits = (rows) => (webMode
-        ? rows.map((m) => ({ caption: (m.caption || m.file_name).slice(0, 80) }))
+        ? rows.map((m) => ({ caption: (m.caption || m.file_name).slice(0, 80), code: codeOf(m) }))
         : rows.map((m) => ({ path: m.path, tag: m.tag, caption: m.caption })))
       const howToSend = webMode
-        ? '发图:把下面某一行的 [表情: ...] 整段原样写进回复(描述抄候选原文,可加一两句文字,不要加网址)。'
+        ? '发图:把下面某一行的整段(含末尾那个 ·码)原样写进回复(描述抄候选原文,可加一两句文字,不要加网址,不要漏掉 ·码)。'
         : '用 send + path 发出。'
 
       // 关键词优先:有关键词就先精确搜(caption/关键词/图名),命中了直接给候选。

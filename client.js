@@ -1483,7 +1483,10 @@ window.__ModuleLoader__.load({
         const desc = (m.caption || m.keywords || m.tag || '表情包').slice(0, 80)
         // [patch-dsh-meme-pickmap] 记住"用户点的这张" —— 点谁发谁，不再依赖模糊匹配
         try { if (m.url) memePickMap.set(String(m.caption || desc).trim(), String(m.url)) } catch (e) {}
-        const text = '[表情: ' + desc + ']'
+        // [patch-dsh-meme-pincode] ② 码：把图库行的稳定码塞进标记后缀，用户点谁就是谁
+        // （同一条 caption 挂多张图时，描述本身分辨不出来，码可以）。
+        const code = memeCodeFromRow(m)
+        const text = '[表情: ' + desc + ']' + (code ? ' ·' + code : '')
         const cur = inputState && typeof inputState.draft === 'string' ? inputState.draft : ''
         setText(cur.trim() ? cur + '\n' + text : text)
         try { if (actions && actions.submit) actions.submit() } catch (e) {}
@@ -1693,12 +1696,17 @@ window.__ModuleLoader__.load({
       // 兜底(模型偶尔不抄候选原文、自己编描述);仍无命中显示描述原文,
       // 不把 [表情: ...] 标记裸露在气泡里(历史教训:社区反馈「表情显示不出来」)。
       // [patch-dsh-meme-dualcode] 同时认短码格式 [m:xxxx 短名]（码仅供码表用，短名负责可读与匹配）
-      const MEME_TEXT_RE = /\[(?:表情|m):\s*([^\]]+)\](?:\((https?:\/\/[^\s)]+)\))?/g
+      // [patch-dsh-meme-pincode] 第三个身份来源：标记后面跟的 ` ·c1a2b3`（图库行的稳定码，
+      // 由 keywords 尾部的 `·<code>` 提供）。**码在就用码，绝不退回描述模糊匹配** ——
+      // 这是「点的是 A、发出来是 B」的根治手段（见下面 memeCodeIndex）。
+      const MEME_TEXT_RE = /\[(?:表情|m):\s*([^\]]+)\](?:\s*·(c[0-9a-f]{5,6}))?(?:\((https?:\/\/[^\s)]+)\))?/g
       // acceptNode 用不带 g 的副本。带 g 的正则 test() 会推进 lastIndex,下一个文本节点从
       // 上次的位置往后找——于是「这一条运气不好」的消息被静默跳过、永远不出图,还得等下一轮
       // 扫描碰巧把游标绕回 0(历史 bug:表现就是「表情有时显示不出来」)。
-      const MEME_TEXT_TEST = /\[(?:表情|m):\s*([^\]]+)\](?:\((https?:\/\/[^\s)]+)\))?/ // [patch-dsh-meme-dualcode] 必须与 RE 同步
+      const MEME_TEXT_TEST = /\[(?:表情|m):\s*([^\]]+)\](?:\s*·(c[0-9a-f]{5,6}))?(?:\((https?:\/\/[^\s)]+)\))?/ // [patch-dsh-meme-dualcode] 必须与 RE 同步
       let memeIndex = null
+      let memeCodeIndex = new Map() // [patch-dsh-meme-pincode] code → url，码是稳定身份
+      let memeIndexNeedsRecheck = false // 有条目因为索引里没码而没配出来 → 拉完再扫一轮
       let memeSearch = [] // 分词兜底用的 haystack:[{hay:[...], url}]
       let memeIndexLoading = false
       // [patch-dsh-meme-index] 索引新鲜度。图鉴只在页面加载后拉一次，之后新建的表情包
@@ -1744,6 +1752,36 @@ window.__ModuleLoader__.load({
         if (!/^\[m:/i.test(String((hit && hit[0]) || ''))) return raw
         return raw.replace(/^[0-9a-z]{3,12}[\s:：_-]*/i, '').trim() || raw
       }
+      // [patch-dsh-meme-pincode] 行尾的稳定码：`·c1a2b3`（keywords 里，由 _plugin_work\add-meme-codes.mjs
+      // 写入，算法 = 'c' + sha1(path).slice(0,6)）。注意不是 [m:…] 那种短码：
+      // [m:…] 是 token 本身的另一种写法，这个是「挂在标记后面的身份后缀」。
+      // ⚠️ `{5,6}` 不是笔误：V8（Node 24 / Chrome 桌面端实测）在「字符类 + 精确量词」上有个
+      // 可复现的怪癖 —— `c[0-9a-f]{6}` 匹配 'c0ffee' 返回 **false**（`{5}`、`{1,6}`、`{6,7}`
+      // 都正常，`c[a-z]{6}` 也正常，就 `[0-9a-f]` 这一类 + `{6}` 不行）。写法换成区间量词
+      // 立刻正常，所以统一用 `{5,6}`：既躲开这个坑，又向后兼容 5 位老码。
+      const MEME_CODE_RE = /·(c[0-9a-f]{5,6})(?!\w)/ // 用在 keywords 上，取最后一个
+      const memeCodeFromRow = (row) => {
+        const kw = String((row && row.keywords) || '')
+        const found = kw.match(new RegExp(MEME_CODE_RE.source, 'g'))
+        if (!found || !found.length) return ''
+        return found[found.length - 1].slice(1)
+      }
+      // [patch-dsh-meme-pincode] 码 → URL。优先级：① 标记里的 URL（模型抄了完整 URL）
+      // ② 标记后面的稳定码 ③ [m:xxxx] 短码 ④ 描述匹配（老数据兜底，且只在前三者都没有时用）。
+      // 码查不到时**绝不退回描述匹配**——那正是「点的是 A、发出来是 B」；宁可不装饰，
+      // 等索引重拉后再试（由 memeIndexNeedsRecheck 触发）。
+      const memeSrcFor = (hit) => {
+        if (!hit) return ''
+        if (hit[3]) return hit[3] // 标记自带的完整 URL，最硬
+        const code = hit[2]
+        if (code) {
+          const url = memeCodeIndex.get(code)
+          if (url) return url
+          memeIndexNeedsRecheck = true // 索引里还没这个码(多为刚入库的图) → 拉完再扫
+          return ''
+        }
+        return findMemeUrl(memeTokenLabel(hit))
+      }
       const loadMemeIndex = (force) => { // [patch-dsh-meme-index] force=绕过「已有索引」守卫
         if (memeIndexLoading) return
         if (memeIndex && !force) return
@@ -1758,6 +1796,9 @@ window.__ModuleLoader__.load({
           .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json() })
           .then((res) => {
             const rows = (res && res.memes) || []
+            // [patch-dsh-meme-pincode] 码表先建（下面的扫尾要用它）：keywords 尾部那截
+            // ` ·c1a2b3` 是每行独有的稳定身份，一条 caption 挂多张图时只有它能分辨。
+            const codes = new Map()
             memeIndex = new Map()
             for (const row of rows) {
               const url = absMemeUrl(row.url, row.path)
@@ -1766,12 +1807,19 @@ window.__ModuleLoader__.load({
               addCaptionKey(memeIndex, row.keywords, url)
               addCaptionKey(memeIndex, String(row.caption || '').slice(0, 80), url)
               addCaptionKey(memeIndex, String(row.caption || '').slice(0, 100), url)
+              const code = memeCodeFromRow(row)
+              if (code) codes.set(code, url)
             }
+            memeCodeIndex = codes
             memeSearch = buildMemeSearch(rows, (row) => absMemeUrl(row.url, row.path))
             memeIndexAt = Date.now() // [patch-dsh-meme-index]
             memeIndexAttempts = 0
             memeIndexRetryAfter = 0
-            decorateMemeText()
+            // 刚才因为「码还没进索引」而跳过的标记，索引到手后立刻补扫一遍，
+            // 否则那条消息要等下一次别的触发才出图。
+            const relook = memeIndexNeedsRecheck
+            memeIndexNeedsRecheck = false
+            decorateMemeText(relook)
           })
           .catch((error) => {
             // 失败保持 null(下次扫描还能重试),退避到下次重试时刻;提示只打一次,别刷屏
@@ -2011,6 +2059,10 @@ installMemeHoverPreview();
 
 const decorateMemeText = () => {
         let degraded = false // [patch-dsh-meme-index]
+        // [patch-dsh-meme-pincode] 认不出的稳定码只允许触发一次索引重拉（拉完就是第二遍），
+        // 免得每轮扫描都因为一条早被删掉的旧消息反复打接口。
+        const recheck = memeIndexNeedsRecheck
+        if (recheck) memeIndexNeedsRecheck = false
         // 宿主重渲染(切语言/切主题/HMR)会让 React 对纯文本 children 走 textContent 覆写:
         // 注入的 img 和 ghost 一起被抹掉、原文裸露,而 data-meme-decorated 在元素属性上,
         // 覆写不影响它 → 标记还在、注入已不在,下面的 acceptNode 见标记就永久跳过,图再也
@@ -2079,9 +2131,14 @@ const decorateMemeText = () => {
           let m
           while ((m = MEME_TEXT_RE.exec(text))) matches.push(m)
           if (matches.length === 0) continue
-          const needsLookup = matches.some((hit) => !hit[2])
+          const needsLookup = matches.some((hit) => !hit[2]) // [patch-dsh-meme-pincode] 有码就不用查表
           if (needsLookup && !memeIndex) {
             loadMemeIndex()
+            continue
+          }
+          if (needsLookup && recheck) {
+            // 这一遍本来就是「码表刚更新」的重扫，还是查不到就直接放弃这一条（不装饰、
+            // 不标 memeDecorated，下次别的事件驱动扫描还能再试），别再触发第三遍。
             continue
           }
           parent.dataset.memeDecorated = '1'
@@ -2090,7 +2147,7 @@ const decorateMemeText = () => {
           // 「配图中」藏起来（CSS 规则），图注入完成的瞬间这里就撤标记。索引里没有对应图、
           // 后面走降级分支时也不会留标记（只有 fig 配到才设）。万一图片请求挂了，样式表里
           // 那个 4s 兜底动画会把原文放回来，不会留一个空气泡。
-          if (matches.some((hit) => hit[2] || findMemeUrl(memeTokenLabel(hit)))) {
+          if (matches.some((hit) => memeSrcFor(hit))) { // [patch-dsh-meme-pincode]
             parent.dataset.memePending = '1'
             parent.dataset.memePendingAt = String(Date.now())
           }
@@ -2100,7 +2157,7 @@ const decorateMemeText = () => {
           for (const hit of matches) {
             if (hit.index > last) frag.appendChild(document.createTextNode(text.slice(last, hit.index)))
             const label = memeTokenLabel(hit) // [patch-dsh-meme-dualcode]
-            const src = hit[2] || findMemeUrl(label)
+            const src = memeSrcFor(hit) // [patch-dsh-meme-pincode] 码/URL 优先，描述匹配只兜底
             if (src) {
               const img = document.createElement('img')
               img.src = src
