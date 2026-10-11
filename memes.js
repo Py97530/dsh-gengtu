@@ -9,7 +9,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { basename, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, copyFileSync, writeFileSync } from 'node:fs'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 /** 内置图库根目录：插件包内 memes/<id>/（留作自研种子库的位置；默认包里不再带图）。 */
@@ -42,6 +43,55 @@ export function defaultMemeRoot() {
 const LIBRARY_SCHEMA = 'CREATE TABLE IF NOT EXISTS memes (path TEXT PRIMARY KEY, tag TEXT, file_name TEXT, caption TEXT, keywords TEXT, mtime REAL, captioned_at REAL)'
 
 /**
+ * 首启种图:把插件自带的 `seed/`(图 + manifest.json)导入这个空库。
+ *
+ * 只在**空库**上跑(index.db 一行都没有),所以不会反复种、也不会跟用户的图打架;
+ * 一张一张 INSERT OR IGNORE,中途失败(比如某张图权限不对)最多少一张,不能让
+ * 整库初始化失败——库建不起来插件就等于没装上,那是更贵的事故。
+ * 码(= sha1(图库内相对路径) 前 6 位)在这里必须重算:图的路径从 `seed/seed-001.jpg`
+ * 变成 `memes/<tag>/seed-001.jpg`,照抄 manifest 里的旧码会对不上任何一张图。
+ * 清单里没有 seed 目录(bundled 还是老的自带包)时静默跳过。
+ * @returns {number} 实际导入的图片数
+ */
+function seedLibrary(dir) {
+  // 码的算法必须和 _plugin_work\add-meme-codes.mjs 完全一致（web 侧靠它点谁发谁）
+  const hashCodeFor = (rel) => 'c' + createHash('sha1').update(rel).digest('hex').slice(0, 6)
+  let manifest = null
+  try {
+    const file = join(bundledPacksDir(), '..', 'seed', 'manifest.json')
+    if (existsSync(file)) manifest = JSON.parse(readFileSync(file, 'utf8'))
+  } catch { manifest = null }
+  const items = manifest && Array.isArray(manifest.items) ? manifest.items : []
+  if (items.length === 0) return 0
+  const db = new DatabaseSync(join(dir, 'index.db'))
+  let n = 0
+  try {
+    const stmt = db.prepare('INSERT OR IGNORE INTO memes (path, tag, file_name, caption, keywords, mtime, captioned_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    for (const it of items) {
+      const file = String((it && it.file) || '')
+      if (!file || file.indexOf('/') >= 0 || file.indexOf('\\') >= 0 || file.indexOf('..') >= 0) continue
+      const tag = /^[a-z0-9_-]{1,40}$/.test(String((it && it.tag) || '')) ? String(it.tag) : 'happy'
+      const src = join(bundledPacksDir(), '..', 'seed', file)
+      const name = basename(file)
+      const rel = 'memes/' + tag + '/' + name
+      try {
+        const abs = join(dir, rel)
+        if (!existsSync(abs)) {
+          mkdirSync(join(dir, 'memes', tag), { recursive: true })
+          copyFileSync(src, abs)
+        }
+        const keywords = (String((it && it.keywords) || '').replace(/·c[0-9a-f]{5,6}/g, '').trim() + ' ·' + hashCodeFor(rel)).trim()
+        stmt.run(rel, tag, name, String((it && it.caption) || '').slice(0, 200), keywords.slice(0, 220), Date.now(), Date.now())
+        n += 1
+      } catch { /* 单张失败不拖垮整库 */ }
+    }
+  } finally {
+    db.close()
+  }
+  return n
+}
+
+/**
  * 打开图库前保证「目录 + index.db」都在：包里不带种子库时，首次启动就地建一个空库，
  * 用户自己传图/学图往里填。少了这一步 MemesStore 会因缺索引抛错，调用方 return，
  * 表现就是「插件根本没装上」（历史事故）。
@@ -55,6 +105,28 @@ export function ensureLibrary(root = defaultMemeRoot()) {
     const db = new DatabaseSync(indexPath)
     db.exec(LIBRARY_SCHEMA)
     db.close()
+  }
+  // [patch-dsh-meme-seed] 库里一张图都没有才铺种子图(装完就有底图可用)。
+  // 「表里 0 行」≠「新库」:用户删光自己的图之后重启,不该被硬塞回 57 张 —— 所以先认
+  // sqlite_master 里有没有这张表,表在就是老库,一行都不种。
+  try {
+    const db = new DatabaseSync(indexPath, { readOnly: true })
+    let fresh = false
+    try {
+      const hasTable = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memes'").get()
+      fresh = !hasTable
+      if (hasTable) fresh = Number(db.prepare('SELECT COUNT(*) AS n FROM memes').get().n) === 0 && !existsSync(join(dir, '.seeded'))
+    } finally { db.close() }
+    if (fresh) {
+      const n = seedLibrary(dir)
+      if (n > 0) {
+        // 记号文件:以后哪怕用户把图删光,也不再自动种回来(用户删了就是删了)
+        try { writeFileSync(join(dir, '.seeded'), new Date().toISOString()) } catch (e) { console.error('[dsh-expression] 写 .seeded 失败:', e instanceof Error ? e.message : String(e)) }
+        console.log('[dsh-expression] 已导入自带种子表情包 ' + n + ' 张 → ' + dir + (existsSync(join(dir, '.seeded')) ? ' (已打记号)' : ' (记号没落盘!)'))
+      }
+    }
+  } catch (error) {
+    console.error('[dsh-expression] 种子图导入失败(不影响空库使用):', error instanceof Error ? error.message : String(error))
   }
   return dir
 }

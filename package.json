@@ -21,6 +21,7 @@
     "index.js",
     "memes.js",
     "memes/",
+    "seed/",
     "panel.html",
     "LICENSE",
     "README.md"

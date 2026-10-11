@@ -36,6 +36,8 @@
 | client.js | `[patch-dsh-meme-matchspec]` | 描述匹配三处加固：整串**标点盲**唯一命中优先（≥10 字）、分词兜底改成短词优先、haystack 多一档去标点形 | 模型不抄候选原文时（少个句号、把逗号写成空格）同一张图会配到别的行；「先命中就返回」让最泛的长词（「一只猫」）抢走判定 |
 | client.js | `[patch-dsh-meme-noflip]` | 纯 CSS 把「已配到图」的 `[表情: 描述]` 原文吃掉（`img[data-meme-hide-raw]` 兄弟选择器），配图中先压 4s 兜底动画，失败自动放回原文 | 用户报：点了表情包发出去，气泡里先闪一整行给模型看的注释文字再变图；JS 隐藏会被宿主流式渲染重写翻回来 |
 | client.js + memes.js | `[patch-dsh-meme-pincode]` | 每行 keywords 尾部挂稳定码 `·c1a2b3`（`'c'+sha1(path).slice(0,6)`，由 `_plugin_work/add-meme-codes.mjs` 写入）；`memes.js` 的候选行与 `hits` 都带码；`client.js` 的标记正则多认一个 `·码` 后缀，解析改成 **标记里的 URL > 码表 > 描述匹配**，码查不到时**直接放弃、绝不退回描述匹配**（拉完索引再扫一轮） | 用户报：点的是 A、发出来是 B。病根是一个抖音帖的整组图共用一句 desc 当 caption（库里 14 组 / 92 张撞车），前端索引 `caption→url` 后写覆盖先写、描述匹配又只取「第一个像的」 |
+| memes.js + seed/ + package.json | `[patch-dsh-meme-seed]` | 包里带 `seed/`（用户亲手挑的 57 张底图 4.3MB + manifest.json）；`ensureLibrary()` 首启就地种进用户库，路径 `memes/<tag>/seed-NNN.jpg`，码按新路径重算，种完写 `.seeded` 记号 → **用户删光自己的图后重启不会被硬塞回来** | 装完插件图库空空如也，新用户没法用；原来那 24 张原作者授权是 personal 不能带，这 57 张是自己选的 |
+| index.js + client.js | `[patch-dsh-meme-seedpick]` | 图库选择器加「种子库」挑选模式（点图即勾选、右上角序号）；宿主新增 `POST /dsh-memes-seed-pick` 收清单落盘，浏览器兜底 `http://127.0.0.1:8796/submit` | 要在聊天窗口里直接挑随包分发的底图，不用另开窗口 |
 
 ## 高风险操作令牌
 

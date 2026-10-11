@@ -1656,6 +1656,43 @@ export function apply(ctx, config) {
         }
       },
     }), 'dsh-expression: /memes-panel 管理面板')
+    // 种子库挑选清单落盘:聊天气泡里点选完图后 POST 过来,我(本地脚本)读这个文件打包。
+    // 路径只写一处(工作区 _plugin_work),不落任何用户目录;失败不影响插件其他功能。
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: '/dsh-memes-seed-pick',
+      handler(req, res) {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { allow: 'POST' })
+          res.end()
+          return
+        }
+        readBody(req).then((raw) => {
+          let body = {}
+          try { body = JSON.parse(raw || '{}') } catch { body = {} }
+          const list = Array.isArray(body.paths)
+            ? body.paths.map((p) => String(p || '').trim()).filter(Boolean)
+            : []
+          const seen = new Set()
+          const picks = []
+          for (const p of list) {
+            if (!p.startsWith('memes/') || p.indexOf('..') >= 0) continue
+            if (seen.has(p)) continue
+            seen.add(p)
+            picks.push(p)
+          }
+          const out = '_plugin_work\\seed-pick.json'
+          try {
+            mkdirSync(dirname(out), { recursive: true })
+            writeFileSync(out, JSON.stringify({ at: new Date().toISOString(), mode: String(body.mode || 'seed'), picks }, null, 2))
+            json(res, { ok: true, count: picks.length, file: out })
+          } catch (error) {
+            json(res, { ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+          }
+        }).catch((error) => json(res, { ok: false, error: error instanceof Error ? error.message : String(error) }, 400))
+      },
+    }), 'dsh-expression: /dsh-memes-seed-pick 种子挑选清单')
+
     // 对话里表情包小图展示:只限制 /dsh-memes 图片,避免大图贴脸,不影响其他 UI。
     // 选择器必须用 src*= 子串匹配:send_meme 返回的是绝对 URL
     // (http://host:port/dsh-memes/...),src^= 前缀匹配只对相对路径生效,

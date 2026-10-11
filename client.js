@@ -1331,6 +1331,11 @@ window.__ModuleLoader__.load({
       '.meme-picker .mp-quick{display:flex;flex-wrap:wrap;gap:4px;margin:2px 0 6px}',
       '.meme-picker .mp-cell{width:76px;height:76px;flex:0 0 76px;border:1px solid var(--dsw-alias-border-l1);border-radius:11px;overflow:hidden;cursor:pointer;background:var(--dsw-alias-bg-layer-2);padding:0;display:block;transition:border-color .12s,transform .12s,box-shadow .12s}',
       '.meme-picker .mp-cell:hover{border-color:var(--dsw-alias-brand-primary);transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.15)}',
+      // [patch-dsh-meme-seedpick] 种子库挑选模式:选中打勾 + 序号
+      '.meme-picker .mp-cell.on{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px var(--dsw-alias-brand-primary) inset}',
+      '.meme-picker .mp-pick{position:absolute;top:3px;right:3px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-layer-1);font-size:10px;line-height:16px;text-align:center;font-weight:600}',
+      '.meme-picker .mp-seedbar{display:flex;align-items:center;gap:8px;padding:6px 2px 0;font-size:11px}',
+      '.meme-picker .mp-seedbar .mp-ok{color:var(--dsw-alias-brand-primary)}',
       '.meme-picker .mp-empty{color:var(--dsw-alias-label-secondary);text-align:center;padding:28px 0}',
       // [patch-dsh-meme-glass] 表情包弹层 = 与输入框同款玻璃背景板(配方抄 dsh-plugin-wallpaper-engine):
       // 底色读输入框令牌 --dsw-specific-input-major(= 壁纸引擎改写后的玻璃色),釉面/模糊/阴影读 --we-*;
@@ -1438,6 +1443,10 @@ window.__ModuleLoader__.load({
       const [packs, setPacks] = React.useState([]) // [{id,name,count}] 可切换的表情包组
       const [packId, setPackId] = React.useState('') // '' = 跟随当前激活图库
       const [memeQuery, setMemeQuery] = React.useState('') // [patch-dsh-meme-search] 选择器里的搜索词
+      // [patch-dsh-meme-seedpick] 选择模式:点图 = 勾选,不发消息;勾完导出清单落盘
+      const [seedMode, setSeedMode] = React.useState(false)
+      const [picked, setPicked] = React.useState([]) // [{path,url,caption,tag}]，数组顺序 = 勾选顺序
+      const [seedNote, setSeedNote] = React.useState('')
 
       React.useEffect(() => {
         if (!open) return
@@ -1474,6 +1483,43 @@ window.__ModuleLoader__.load({
       }, [open])
 
       if (!open) return null
+
+      // [patch-dsh-meme-seedpick] 勾选/取消一张（选择模式）
+      const seedToggle = (m) => {
+        if (!m) return
+        setSeedNote('')
+        setPicked((cur) => {
+          const hit = cur.findIndex((x) => x.path === m.path)
+          if (hit >= 0) return cur.filter((x, i) => i !== hit)
+          return cur.concat([{ path: m.path, url: m.url, caption: m.caption || m.file_name || '', tag: m.tag || '' }])
+        })
+      }
+      // [patch-dsh-meme-seedpick] 导出:POST 给宿主插件落盘,我这边读文件打包种子库
+      const seedExport = async () => {
+        if (picked.length === 0) { setSeedNote('还没勾'); return }
+        setSeedNote('导出中…')
+        const paths = picked.map((p) => p.path)
+        // 宿主路由（插件启动时注册；插件没重启时不存在）→ 本地小服务兜底
+        const posts = [
+          ['/dsh-memes-seed-pick', { mode: 'seed', paths }, memeApiHeaders({ 'Content-Type': 'application/json' })],
+          ['http://127.0.0.1:8796/submit', { paths }, { 'Content-Type': 'application/json' }],
+        ]
+        for (const [url, body, headers] of posts) {
+          try {
+            const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
+            const res = await r.json().catch(() => null)
+            if (res && res.ok) { setSeedNote('好，清单落盘了，' + String(res.count) + ' 张'); return }
+          } catch (e) { /* 这条不通就试下一条 */ }
+        }
+        setSeedNote('导出没成功，点「填进对话」贴给我也行')
+      }
+      // [patch-dsh-meme-seedpick] 兜底:直接把清单塞进对话草稿,他手点发送我照样能收到
+      const seedToDraft = () => {
+        if (picked.length === 0) { setSeedNote('还没勾'); return }
+        const text = '种子库选定 ' + picked.length + ' 张：\n' + picked.map((p, i) => (i + 1) + '. ' + p.path).join('\n')
+        try { if (actions && actions.setDraft) actions.setDraft(text) } catch (e) {}
+        store.set(false)
+      }
 
       // 点击:发 [表情: 描述] 文本,前端按描述配图。
       const send = async (m) => {
@@ -1527,18 +1573,23 @@ window.__ModuleLoader__.load({
       const memeQuickWords = ['可爱', '生气', '悲伤', '无语', '开心', '摆烂', '猫', '上班']
 
       // 表情包组 tab:大肥鱼 / 官方 / 导入的包,点选即切换数据源
-      const cells = shownMemes.map((m) => h('div', {
-        key: m.path, className: 'mp-cell', 'data-meme-cap': m.caption || m.file_name, onClick: () => send(m),
-        // [patch-dsh-meme-lazycells] 懒挂背景图：ref 拿不到节点(卸载)时跳过
-        ref: (el) => { if (el) memeLazyBg(el, m.url) },
-        'data-meme-src': m.url,
-        style: {
-          width: '74px', height: '74px',
-          backgroundSize: 'cover',
-          backgroundPosition: 'center center',
-          backgroundRepeat: 'no-repeat',
-        },
-      }))
+      const cells = shownMemes.map((m) => {
+        const order = picked.findIndex((x) => x.path === m.path)
+        return h('div', {
+          key: m.path, className: 'mp-cell' + (order >= 0 ? ' on' : ''), 'data-meme-cap': m.caption || m.file_name,
+          onClick: () => (seedMode ? seedToggle(m) : send(m)),
+          title: seedMode ? '点一下勾选/取消' : (m.caption || m.file_name || ''),
+          // [patch-dsh-meme-lazycells] 懒挂背景图：ref 拿不到节点(卸载)时跳过
+          ref: (el) => { if (el) memeLazyBg(el, m.url) },
+          'data-meme-src': m.url,
+          style: {
+            width: '74px', height: '74px', position: 'relative',
+            backgroundSize: 'cover',
+            backgroundPosition: 'center center',
+            backgroundRepeat: 'no-repeat',
+          },
+        }, seedMode && order >= 0 ? h('span', { className: 'mp-pick' }, String(order + 1)) : null)
+      })
 
       return h('div', { className: 'meme-picker', onClick: (e) => e.stopPropagation() },
         // [patch-dsh-meme-notabs] 已按要求去掉图库选择那一排（切图库请去设置页）
@@ -1549,8 +1600,19 @@ window.__ModuleLoader__.load({
             onKeyDown: (e) => { if (e.key === 'Escape') setMemeQuery('') },
           }),
           memeQuery ? h('button', { type: 'button', className: 'mp-tag', onClick: () => setMemeQuery('') }, '清空') : null,
+          h('button', {
+            type: 'button', className: 'mp-tag' + (seedMode ? ' on' : ''), title: '挑选插件自带的种子图库',
+            onClick: () => { setSeedMode(!seedMode); setSeedNote('') },
+          }, seedMode ? '挑选中 (' + picked.length + ')' : '种子库'),
           h('span', { className: 'mp-count' }, String(shownMemes.length) + '/' + String(memes.length)),
         ),
+        seedMode ? h('div', { className: 'mp-seedbar' },
+          h('span', null, '点图勾选，勾 ' + picked.length + ' 张'),
+          h('button', { type: 'button', className: 'mp-tag on', onClick: seedExport }, '导出清单'),
+          h('button', { type: 'button', className: 'mp-tag', onClick: seedToDraft }, '填进对话'),
+          picked.length ? h('button', { type: 'button', className: 'mp-tag', onClick: () => { setPicked([]); setSeedNote('') } }, '清空') : null,
+          seedNote ? h('span', { className: 'mp-ok' }, seedNote) : null,
+        ) : null,
         h('div', { className: 'mp-quick' },
           ...memeQuickWords.map((w) => h('button', {
             type: 'button', key: w,
