@@ -141,23 +141,18 @@ test('图库模块：能就地建空库、能打开索引、路径不许越界',
   try {
     // 包里不再自带图片（原来那 24 张原作者授权是 personal）⇒ 宿主首次启动必须能自己建出空库，
     // 否则 MemesStore 缺索引抛错、apply 直接 return，表现就是「插件没装上」。
-    // [patch-dsh-meme-seed] 现在包里带了 seed/（用户亲手挑的 57 张底图），首启会就地种进去 ——
-    // 所以断言从「0 张」改成「≥1 张、且每张都带了码、索引和磁盘对得上」。
+    // [patch-dsh-meme-seed] 中间一度带过自己挑的 57 张底图，上架前撤掉了（版权）。
+    // 所以这里断言的是**空库**：索引建得出来、0 行、目录里没有残留图。
     const root = memes.ensureLibrary(path.join(tmp, 'empty'))
     assert.ok(fs.existsSync(path.join(root, 'index.db')), 'ensureLibrary 没建出索引: ' + root)
 
     const store = new memes.MemesStore(root)
     try {
       const listed = store.list()
-      assert.ok(listed.memes.length >= 1, '首启该把自带种子图种进来，结果 0 张')
-      const seedFiles = new Set()
-      const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else seedFiles.add(path.relative(root, p).split(path.sep).join('/')) } }
-      walk(path.join(root, 'memes'))
-      const noCode = listed.memes.filter((m) => !/·c[0-9a-f]{5,6}/.test(String(m.keywords || '')))
-      const noFile = listed.memes.filter((m) => !seedFiles.has(String(m.path)))
-      assert.equal(noFile.length, 0, '种子图索引指向的文件不在磁盘上: ' + (noFile[0] || {}).path)
-      assert.equal(noCode.length, 0, '种子图缺稳定码（点谁发谁会退化成模糊匹配）: ' + (noCode[0] || {}).path)
-      assert.ok(listed.tags.length > 0, '情绪桶列表是空的')
+      assert.equal(listed.memes.length, 0, '包里不该带任何图，结果有 ' + listed.memes.length + ' 张')
+      // 注意 `tags` 回的是**插件认的 6 个情绪桶**（memes.js 里的固定列表），不是库里的实际分桶，
+      // 所以空库这里不是 0（早先断言 tags.length===0 是错的）。
+      assert.deepEqual([...listed.tags].sort(), ['angry', 'confused', 'daily', 'happy', 'sad', 'shy'])
       assert.ok(Array.isArray(store.search('猫', 5).memes))
       assert.ok(memes.moodNames().length > 0)
       assert.throws(() => store.resolveStored('../../../etc/passwd'), /超出/)

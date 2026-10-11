@@ -12,6 +12,8 @@ yarn.lock
 _plugin_work/
 *.log
 *.tmp
+# 开发用挑选服务落下的清单(勾图勾出来的,不进仓库)
+dev/seed-pick.json
 
 # 用户自己的大图库绝不进仓库(版权 + 体积)
 memes/gengtu-*/

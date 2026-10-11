@@ -36,8 +36,8 @@
 | client.js | `[patch-dsh-meme-matchspec]` | 描述匹配三处加固：整串**标点盲**唯一命中优先（≥10 字）、分词兜底改成短词优先、haystack 多一档去标点形 | 模型不抄候选原文时（少个句号、把逗号写成空格）同一张图会配到别的行；「先命中就返回」让最泛的长词（「一只猫」）抢走判定 |
 | client.js | `[patch-dsh-meme-noflip]` | 纯 CSS 把「已配到图」的 `[表情: 描述]` 原文吃掉（`img[data-meme-hide-raw]` 兄弟选择器），配图中先压 4s 兜底动画，失败自动放回原文 | 用户报：点了表情包发出去，气泡里先闪一整行给模型看的注释文字再变图；JS 隐藏会被宿主流式渲染重写翻回来 |
 | client.js + memes.js | `[patch-dsh-meme-pincode]` | 每行 keywords 尾部挂稳定码 `·c1a2b3`（`'c'+sha1(path).slice(0,6)`，由 `_plugin_work/add-meme-codes.mjs` 写入）；`memes.js` 的候选行与 `hits` 都带码；`client.js` 的标记正则多认一个 `·码` 后缀，解析改成 **标记里的 URL > 码表 > 描述匹配**，码查不到时**直接放弃、绝不退回描述匹配**（拉完索引再扫一轮） | 用户报：点的是 A、发出来是 B。病根是一个抖音帖的整组图共用一句 desc 当 caption（库里 14 组 / 92 张撞车），前端索引 `caption→url` 后写覆盖先写、描述匹配又只取「第一个像的」 |
-| memes.js + seed/ + package.json | `[patch-dsh-meme-seed]` | 包里带 `seed/`（用户亲手挑的 57 张底图 4.3MB + manifest.json）；`ensureLibrary()` 首启就地种进用户库，路径 `memes/<tag>/seed-NNN.jpg`，码按新路径重算，种完写 `.seeded` 记号 → **用户删光自己的图后重启不会被硬塞回来** | 装完插件图库空空如也，新用户没法用；原来那 24 张原作者授权是 personal 不能带，这 57 张是自己选的 |
-| index.js + client.js | `[patch-dsh-meme-seedpick]` | 图库选择器加「种子库」挑选模式（点图即勾选、右上角序号）；宿主新增 `POST /dsh-memes-seed-pick` 收清单落盘（默认 `<home>/.dsh/dsh-memes-seed-pick.json`，可用 `dir` 覆盖；拒绝写进图库目录），浏览器兜底 `http://127.0.0.1:8796/submit` | 要在聊天窗口里直接挑随包分发的底图，不用另开窗口 |
+| memes.js | `[patch-dsh-meme-seed]` | 保留「首启种图」机制但**包里不带图**（曾短暂带过自己挑的 57 张底图，后撤掉）：`seedLibrary()` 读包内 `seed/manifest.json`，没有就返回 0；有则 `INSERT OR IGNORE` 逐张导入、码按新路径(`memes/<tag>/seed-NNN.jpg`)重算、种完写 `.seeded` 记号（用户自己删光图后重启**不会**被硬塞回来） | 装完插件图库空空如也，新用户没法用；但随包分发别人的图有版权风险，所以机制留着、图不带 —— 想自带就自己放 `seed/` |
+| client.js | `[patch-dsh-meme-seedpick]` | 图库面板加「挑选」模式（默认关；点图只勾选、右上角序号，导出发本地打包服务 `http://127.0.0.1:8796/submit`，另有「填进对话」兜底） | 要能在聊天窗口里直接挑图攒一份自带底图，不用另开窗口；做成默认关，普通用户点图就该直接发出去 |
 | client.js + index.js | `[patch-dsh-meme-window]` | 图库面板一次只铺 72 格、滚到底自动续（IntersectionObserver 哨兵 `mp-more`）；删图改成只摘掉本地那一格（失败才回退全量 `load()`）；宿主 `op:'delete'` 的存在性校验从全表 `list().some()` 改成按主键单查 | 用户报：删完表情包电脑卡几秒。本机实测整库 979 张铺满 = 141MB / 5.6 秒随机读，`node:sqlite` 又跑在后端主线程上 |
 
 ## 高风险操作令牌
@@ -88,3 +88,19 @@
    一行一个地址，逗号/空格/分号都吃；留空 = 不挂任何目录。以前只能手改
    `~/.dsh/dsh-expression.json`，等于把这个功能藏起来了。
    `packPayload()` 只回用户自己设的值（`remoteDirUser`），别把解析后的默认值塞回输入框。
+
+## 2026-10-11 第四刀：撤掉自带底图，准备上架
+
+1. **删掉 `seed/`**（自己从图库里挑的 57 张底图 + `manifest.json`）。当时加它是因为
+   「装完图库空空如也」，但那 57 张全部来自抖音搬运号，**随包分发（npm / 插件市场）的版权
+   性质和「存在自己硬盘里斗图」完全不同**，上架前撤掉最稳。`package.json` 的 `files` 里
+   也去掉了 `seed/`。
+   - **机制留着**：`memes.js` 的 `seedLibrary()` 还在，包内没有 `seed/manifest.json` 时
+     静默返回 0；将来想自带底图（自己画的 / CC0 / 买了授权的）只要把 `seed/` 放回来就行。
+   - 空库依旧能自己建出来（`ensureLibrary()` 不动），所以撤图不会让插件装不上。
+2. **删掉宿主路由 `POST /dsh-memes-seed-pick`**。它只服务于「挑图打包」这个开发动作，
+   随包发一个「往你磁盘写清单」的写接口没有必要。挑选模式还在（面板「挑选」按钮，默认关），
+   导出改走本地打包服务 `http://127.0.0.1:8796/submit`（开发时手动跑）。
+3. `test/basic.test.mjs` 里那段断言（原来断言「首启至少 1 张自带图」）改回
+   **空库断言**：索引建得出来、0 行、目录里没有残留图、`tags` 为空、`search()` 返回数组、
+   越界路径仍然抛错 —— 保证「包里不带图」这条约定以后不会被误改回去。

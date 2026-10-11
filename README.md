@@ -38,15 +38,19 @@ dsh plugin --profile desktop add file:/绝对路径/dsh-gengtu
   要挂自己的目录：直接在**设置页「图库目录」**里填（一行一个地址，留空即不挂），
   格式见 [`docs/remote-pack-spec.md`](docs/remote-pack-spec.md)；也能手写 `~/.dsh/dsh-expression.json`
   的 `"remoteDirUrl"`，或加进 `index.js` 的 `DEFAULT_REMOTE_DIR_URLS`（那是给 fork 改默认值用的）。
-- **本仓库不带任何图片**：网络收集的梗图版权不属于本项目；早先随包发的那 24 张示例图
-  （大肥鱼，来自上游 dsh-meme）授权是 `personal`，不能再分发，已撤出仓库。
+- **本仓库不带任何图片**：网络收集的梗图版权不属于本项目 —— 早先随包发的那 24 张示例图
+  （大肥鱼，来自上游 dsh-meme）授权是 `personal`；后来自己攒的 57 张底图来源是抖音搬运号，
+  也一起撤了（**存在自己硬盘里斗图**和**随包公开分发**是两码事）。
   所以装好第一件事是喂图：**上传**、让模型 `learn_meme` 学图、**导入 ZIP**，或把「扫描目录」
   指到一个已经装好图库的父目录。空库也能正常用（宿主首次启动会就地建出来，见 `memes/README.md`）。
+  将来若要自带底图（自己画的 / CC0 / 有授权的），机制还在：放一个 `seed/`，规格见
+  [`memes/README.md`](memes/README.md)。
 
 ## 版权与删除请求
 
 - **代码**：MIT，见 [`LICENSE`](LICENSE)（保留原项目版权行，这是 MIT 的要求）。
-- **梗图**：版权归各自原作者。本项目**不再分发**任何图片（含早先那批 `personal` 授权的示例图）。
+- **梗图**：版权归各自原作者。本项目**不分发**任何图片 —— 上游那批 `personal` 授权的示例图、
+  以及早期自己攒的 57 张抖音底图，都已撤出仓库；装完请自己喂图。
 - 如果你是某张图的作者并要求移除：开一个 issue（面板底部有直达按钮），说明是哪张，我们删。
 
 ## 测试
@@ -78,8 +82,9 @@ dsh plugin --profile <profile> add github:Py97530/dsh-gengtu
 
 ⚠️ Do **not** install alongside upstream `dsh-meme` — both use the plugin id `dsh-expression`.
 
-Packs live in `~/.dsh/meme-packs/<pack>/` (`index.db` + `manifest.json` + `memes/<tag>/`).
-No large image library is shipped in this repo: **meme images belong to their original authors.**
+Meme images live in `~/.dsh/meme-packs/<pack>/` (`index.db` + `manifest.json` + `memes/<tag>/`)
+and **none are shipped here: meme images belong to their original authors.** The plugin creates an
+empty pack on first launch; feed it via upload / `learn_meme` / ZIP import / a scanned pack directory.
 Takedown requests: open an issue.
 
 MIT — original work © Selfloom contributors (`dsh-meme`).

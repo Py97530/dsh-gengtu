@@ -25,7 +25,6 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, rmSync, readdirSync, renameSync, statSync } from 'node:fs'
 import { join, dirname, resolve, sep, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import {
@@ -1661,50 +1660,6 @@ export function apply(ctx, config) {
         }
       },
     }), 'dsh-expression: /memes-panel 管理面板')
-    // 种子库挑选清单落盘:聊天气泡里点选完图后 POST 过来,本地脚本读这个文件打包。
-    // 落点优先用 body.dir(开发时指到工作区),默认 <home>/.dsh/dsh-memes-seed-pick.json;
-    // 拒绝写进图库自己所在的目录(免得清单被当成表情包收进去)。失败不影响插件其他功能。
-    ctx.effect(() => webServer.register({
-      kind: 'exact',
-      path: '/dsh-memes-seed-pick',
-      handler(req, res) {
-        if (req.method !== 'POST') {
-          res.writeHead(405, { allow: 'POST' })
-          res.end()
-          return
-        }
-        readBody(req).then((raw) => {
-          let body = {}
-          try { body = JSON.parse(raw || '{}') } catch { body = {} }
-          const list = Array.isArray(body.paths)
-            ? body.paths.map((p) => String(p || '').trim()).filter(Boolean)
-            : []
-          const seen = new Set()
-          const picks = []
-          for (const p of list) {
-            if (!p.startsWith('memes/') || p.indexOf('..') >= 0) continue
-            if (seen.has(p)) continue
-            seen.add(p)
-            picks.push(p)
-          }
-          const asked = String(body.dir || '').trim()
-          const out = asked
-            ? resolve(asked, 'seed-pick.json')
-            : join(homedir(), '.dsh', 'dsh-memes-seed-pick.json')
-          try {
-            if (memes.root && resolve(dirname(out)).startsWith(resolve(memes.root))) {
-              json(res, { ok: false, error: '不让往图库目录里写清单' }, 400)
-              return
-            }
-            mkdirSync(dirname(out), { recursive: true })
-            writeFileSync(out, JSON.stringify({ at: new Date().toISOString(), mode: String(body.mode || 'seed'), picks }, null, 2))
-            json(res, { ok: true, count: picks.length, file: out })
-          } catch (error) {
-            json(res, { ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
-          }
-        }).catch((error) => json(res, { ok: false, error: error instanceof Error ? error.message : String(error) }, 400))
-      },
-    }), 'dsh-expression: /dsh-memes-seed-pick 种子挑选清单')
 
     // 对话里表情包小图展示:只限制 /dsh-memes 图片,避免大图贴脸,不影响其他 UI。
     // 选择器必须用 src*= 子串匹配:send_meme 返回的是绝对 URL

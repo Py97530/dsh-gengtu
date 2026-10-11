@@ -1458,7 +1458,8 @@ window.__ModuleLoader__.load({
       // Chromium 会同时发几百个图片请求（本机实测 979 张 ≈ 141MB、5.6 秒磁盘读），
       // 表现就是「打开面板/删完图，电脑卡几秒」。滚到底再续 72 张，体感一样。
       const [memeLimit, setMemeLimit] = React.useState(72)
-      // [patch-dsh-meme-seedpick] 选择模式:点图 = 勾选,不发消息;勾完导出清单落盘
+      // [patch-dsh-meme-seedpick] 挑选模式（默认关）:点图 = 勾选、不发消息;勾完导出清单落盘。
+      // 不做成默认开：挑图是给你自己攒「随包底图」用的开发动作，普通用户点图就该直接发出去。
       const [seedMode, setSeedMode] = React.useState(false)
       const [picked, setPicked] = React.useState([]) // [{path,url,caption,tag}]，数组顺序 = 勾选顺序
       const [seedNote, setSeedNote] = React.useState('')
@@ -1511,24 +1512,23 @@ window.__ModuleLoader__.load({
           return cur.concat([{ path: m.path, url: m.url, caption: m.caption || m.file_name || '', tag: m.tag || '' }])
         })
       }
-      // [patch-dsh-meme-seedpick] 导出:POST 给宿主插件落盘,我这边读文件打包种子库
+      // [patch-dsh-meme-seedpick] 导出:POST 给本地打包服务落盘(开发时手动跑 dev/pick-server.mjs)。
+      // 不做成插件自带路由 —— 随包公开分发时不该多一个「往你磁盘写清单」的接口。
       const seedExport = async () => {
         if (picked.length === 0) { setSeedNote('还没勾'); return }
         setSeedNote('导出中…')
         const paths = picked.map((p) => p.path)
-        // 宿主路由（插件启动时注册；插件没重启时不存在）→ 本地小服务兜底
         const posts = [
-          ['/dsh-memes-seed-pick', { mode: 'seed', paths }, memeApiHeaders({ 'Content-Type': 'application/json' })],
           ['http://127.0.0.1:8796/submit', { paths }, { 'Content-Type': 'application/json' }],
         ]
         for (const [url, body, headers] of posts) {
           try {
             const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
             const res = await r.json().catch(() => null)
-            if (res && res.ok) { setSeedNote('好，清单落盘了，' + String(res.count) + ' 张'); return }
+            if (res && res.ok) { setSeedNote('好，清单发出去了，' + String(res.count) + ' 张'); return }
           } catch (e) { /* 这条不通就试下一条 */ }
         }
-        setSeedNote('导出没成功，点「填进对话」贴给我也行')
+        setSeedNote('没连上本地打包服务，点「填进对话」贴给我也行')
       }
       // [patch-dsh-meme-seedpick] 兜底:直接把清单塞进对话草稿,他手点发送我照样能收到
       const seedToDraft = () => {
@@ -1620,9 +1620,9 @@ window.__ModuleLoader__.load({
           }),
           memeQuery ? h('button', { type: 'button', className: 'mp-tag', onClick: () => setMemeQuery('') }, '清空') : null,
           h('button', {
-            type: 'button', className: 'mp-tag' + (seedMode ? ' on' : ''), title: '挑选插件自带的种子图库',
+            type: 'button', className: 'mp-tag' + (seedMode ? ' on' : ''), title: '挑选模式：点图只勾选、不发出去（用来攒随包底图）',
             onClick: () => { setSeedMode(!seedMode); setSeedNote('') },
-          }, seedMode ? '挑选中 (' + picked.length + ')' : '种子库'),
+          }, seedMode ? '挑选中 (' + picked.length + ')' : '挑选'),
           h('span', { className: 'mp-count' }, String(windowedMemes.length) + '/' + String(shownMemes.length) + (shownMemes.length < memes.length ? ' 共' + String(memes.length) : '')),
         ),
         seedMode ? h('div', { className: 'mp-seedbar' },
