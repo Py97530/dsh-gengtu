@@ -1,0 +1,22 @@
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# 补丁脚本留下的备份(只在开发机上出现,不进包也不进仓库)
+*.bak
+*.orig
+*.rej
+
+# 打标/抓取/发布的中间产物
+_plugin_work/
+*.log
+*.tmp
+
+# 用户自己的大图库绝不进仓库(版权 + 体积)
+memes/gengtu-*/
+memes/*-2026*/
+!memes/dafeiyu-001/
+
+.DS_Store
+Thumbs.db

@@ -1,0 +1,66 @@
+{
+  "name": "dsh-gengtu",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 梗图/表情包插件:本地图库 + 情绪与关键词搜图 + 中文抽象梗图分发(dsh-meme 的二次开发,MIT)。",
+  "description.en": "Meme/sticker plugin for DeepSeek Harness: local pack library, emotion & keyword search, Chinese abstract-meme delivery.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Py97530/dsh-gengtu.git"
+  },
+  "homepage": "https://github.com/Py97530/dsh-gengtu",
+  "bugs": {
+    "url": "https://github.com/Py97530/dsh-gengtu/issues"
+  },
+  "author": "Py97530",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "client.js",
+    "cordis.patch.yml",
+    "docs/",
+    "index.js",
+    "memes.js",
+    "memes/",
+    "panel.html",
+    "LICENSE",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "dsh-gengtu",
+    "deepseek-harness",
+    "meme",
+    "gengtu",
+    "sticker",
+    "表情包",
+    "梗图"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "test": "node --import ./test/stub/register.mjs --test test/*.test.mjs"
+  }
+}

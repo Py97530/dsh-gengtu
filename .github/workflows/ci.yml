@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # 测试不需要 DSH 宿主：@deepseek-ai/dsh-tools 由 test/stub/ 顶替。
+      # 覆盖：包身份三处一致、发布清单齐全、源码里没有本机路径、补丁标记没被上游覆盖、
+      # ZIP 读写闭环、图库模块能扫包开库且路径不许越界。
+      - run: npm test
