@@ -28,6 +28,8 @@
 | index.js | `[patch-dsh-meme-auth]` | `/dsh-memes-api` 无 Origin 即 403 + 高风险操作要令牌 | 本机任意进程/插件都能改库、改提示词 |
 | index.js | `[patch-dsh-meme-pathguard]` | 图片/导出/删除路由路径归一化 | 索引里的 `path` 能越出图库根 |
 | index.js | `[patch-dsh-meme-hardening]` | 上传限 8MB + 魔术字节校验；`learn_meme` 拒绝内网地址 | 无上限上传、SSRF |
+| index.js | `[patch-dsh-gengtu-nomarket]` | `DEFAULT_REMOTE_DIR_URLS` 留空；没配源时按「空目录」返回 | 默认去装别人收集的表情包，版权与归属都不对；也别把「没配源」报成「网络挂了」 |
+| client.js | `[patch-dsh-gengtu-nomarket]` | 发现页空态文案（「还没有可用的图库目录」+ 去处提示） | 同上 |
 
 ## 高风险操作令牌
 
@@ -48,3 +50,17 @@
 同批顺带：发现页空态加「重新拉取目录」按钮；默认目录源加 `fastly.jsdelivr.net` /
 `testingcf.jsdelivr.net` 两个备用节点（`raw.githubusercontent.com` 本机不通）；
 「空目录源」不再顶掉后面的真目录。
+
+## 2026-10-11 第二刀：拆掉默认图库市场
+
+原来的 `DEFAULT_REMOTE_DIR_URLS` 内置了上游的公共图库市场（`yyh-001/dsh-meme-packs` 的
+`catalog.json`，4 个镜像地址 + 2 个空文件地址）。现在**整个数组清空**：
+
+- 图库目录 = "谁提供内容、谁负责版权"的东西，默认指向别人收集的表情包不合适。
+- 没配目录源时 `fetchRemoteDirectory()` 返回 `[]`（空目录），不再是 `null`（那是"网络挂了"）。
+- 发现页空态改成「还没有可用的图库目录」+ 去处提示（导入 ZIP / 扫描目录）。
+- 自建目录的三种配置方式、多源顺序、缓存与踩坑记录，全写进 `docs/remote-pack-spec.md`。
+
+顺带记一笔实测数据（用来定"别用 raw"这条规矩）：
+`raw.githubusercontent.com` 四轮里成功 1 次、其余是 10~12 秒超时；`cdn/fastly/testingcf.jsdelivr.net`
+节点 124~435ms 稳定；`?t=` 时间戳不影响成败（带的时候反而更快）。

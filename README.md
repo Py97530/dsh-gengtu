@@ -33,9 +33,11 @@ dsh plugin --profile desktop add file:/绝对路径/dsh-gengtu
 ## 图库怎么放
 
 - 图库目录：`~/.dsh/meme-packs/<包名>/`，结构是 `index.db` + `manifest.json` + `memes/<情绪桶>/<文件>`。
-- 设置页能：切换图库、导入 / 导出整包 ZIP、在「发现」里直接装远程图库。
-- 想用自己的图库源：在设置页「扫描目录」指过去，或把地址加到 `index.js` 的 `DEFAULT_REMOTE_DIR_URLS`（数组最前面）。
-- **本仓库不打包大图库**：网络收集的梗图版权不属于本项目，包里只带 0.9MB 的示例库（大肥鱼 24 张）。
+- 设置页能：切换图库、导入 / 导出整包 ZIP、扫描目录；「发现」页列出**图库目录**里的远程图库，点一下就装。
+- **「发现」页默认是空的**：本插件不内置任何第三方图库市场地址（不去装别人收集的表情包）。
+  要挂自己的目录：在 `~/.dsh/dsh-expression.json` 里写 `"remoteDirUrl": "https://你的地址/catalog.json"`
+  （或加进 `index.js` 的 `DEFAULT_REMOTE_DIR_URLS`），格式见 [`docs/remote-pack-spec.md`](docs/remote-pack-spec.md)。
+- **本仓库不打包大图库**：网络收集的梗图版权不属于本项目，包里只带 0.9MB 的示例库（大肥鱼 24 张，随上游包 MIT 分发）。
 
 ## 版权与删除请求
 

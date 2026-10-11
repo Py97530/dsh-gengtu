@@ -163,25 +163,24 @@ const ROUTE = '/dsh-memes'
 
 /**
  * 内置图库目录源,按顺序试第一个能用的。
- * raw 放前面:jsDelivr 对 @main 是「按仓库缓存 12h」,push 之后它会继续吐旧内容
- * (实测带 ?t= 时间戳也绕不过它的 shield 缓存),市场改了 catalog 客户端半天看不到。
- * jsDelivr 留作 raw 被墙时的兜底,加了新 catalog 记得 purge:
- * `curl https://purge.jsdelivr.net/gh/yyh-001/dsh-meme-packs@main/catalog.json`
  *
- * dsh-gengtu 的说明:下面四个地址是**上游的公共图库市场**(dsh-meme-packs)。
- * 保留它们是为了让「设置 → 发现」开箱就有图库可装。等你自己托管了图库目录,
- * 把自己的地址放在数组最前面即可(前面的拉不到才会退到后面的,所以不影响兜底)。
+ * [patch-dsh-gengtu-nomarket] 这里**故意留空**:「图库目录」是"谁提供的、谁负责内容"
+ * 的东西,内置成上游的公共图库市场(yyh-001/dsh-meme-packs)等于默认去装别人收集的表情包,
+ * 版权与归属都不该这样默认。自己托管了目录再填这里(或走用户设置/patch 配置,见下)。
+ *
+ * 挂自己的图库目录,二选一(都不用改这里的代码):
+ *   1. 用户设置:`~/.dsh/dsh-expression.json` 里写 `"remoteDirUrl": "https://你的/catalog.json"`
+ *   2. patch 配置:`config.remoteDirUrl`
+ * 都可以给数组,按顺序试第一个能用的(前面拉不到才退到后面,前一个返回空目录也继续试)。
+ *
+ * 目录文件形状见 `docs/remote-pack-spec.md`:裸数组或 `{ schemaVersion, updatedAt, packs: [...] }`,
+ * 每个条目要有 `archiveUrl`(整包 ZIP)或 `manifestUrl`(逐图清单)。
+ *
+ * 托管建议:放对象存储/CDN 的静态 JSON,**别用 raw.githubusercontent.com**
+ * (2026-10-11 本机实测:raw 四轮里成一次、失败是 10~12 秒超时;jsDelivr 各节点 124~435ms 稳)。
+ * jsDelivr 是按仓库缓存 @main 的(边缘 12h),换镜像记得清:`curl https://purge.jsdelivr.net/gh/<owner>/<repo>@main/<file>`
  */
-export const DEFAULT_REMOTE_DIR_URLS = [
-  'https://raw.githubusercontent.com/yyh-001/dsh-meme-packs/main/catalog.json',
-  'https://cdn.jsdelivr.net/gh/yyh-001/dsh-meme-packs@main/catalog.json',
-  // jsDelivr 的备用节点:国内 cdn.jsdelivr.net 抽风时顶上来
-  // (2026-10-11 本机实测:raw.githubusercontent 两个源都 ECONNRESET,cdn/fastly/testingcf 三个 jsDelivr 节点都 200)
-  'https://fastly.jsdelivr.net/gh/yyh-001/dsh-meme-packs@main/catalog.json',
-  'https://testingcf.jsdelivr.net/gh/yyh-001/dsh-meme-packs@main/catalog.json',
-  'https://raw.githubusercontent.com/yyh-001/dsh-meme/main/docs/remote-packs.json',
-  'https://cdn.jsdelivr.net/gh/yyh-001/dsh-meme@main/docs/remote-packs.json',
-]
+export const DEFAULT_REMOTE_DIR_URLS = []
 
 export function apply(ctx, config) {
   // 图库目录设置存 ~/.dsh(稳定,不受包升级/图库变化影响):
@@ -782,8 +781,12 @@ export function apply(ctx, config) {
 
     const fetchRemoteDirectory = async () => {
       if (remoteDirCache && Date.now() - remoteDirCache.at < 60000) return remoteDirCache.data
+      const urls = [].concat(remoteDirUrls() || [])
+      // [patch-dsh-gengtu-nomarket] 一个目录源都没配(默认如此):按「空目录」返回。
+      // 返回 null 会让前端把「没配源」报成「网络挂了」,那是误导。
+      if (urls.length === 0) { remoteDirCache = { at: Date.now(), data: [] }; return [] }
       let sawEmpty = null // 遇到「能拉到但目录是空的」源:记住它,继续往下试,全都空才当空目录返回
-      for (const u of [].concat(remoteDirUrls() || [])) {
+      for (const u of urls) {
         try {
           let res
           try {

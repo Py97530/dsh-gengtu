@@ -1,8 +1,13 @@
-# dsh-meme 远程图库清单格式(remote-pack manifest)
+# dsh-gengtu 远程图库清单格式(remote-pack manifest)
+
+> 本文档改编自 [yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme)（MIT）的对应文档，
+> 按 dsh-gengtu 的现状（默认不挂任何图库目录）做了修订。
 
 远程图库 = 一个托管在任意 http(s) 地址的 JSON 清单。
 
 > **入口现状**:界面上目前只有「从目录安装」这一条路——设置页「发现」读图库目录,点卡片上的「安装」走 Release ZIP,点卡片本身可以预览图库里的图。按清单地址订阅(逐图增量)的入口收起来了,后端仍在(`subscribeRemote` / `updateRemotePack` / 任务进度),需要时再放回界面;目录源本身可以通过 `remoteDirUrl` 换成你自己的。
+>
+> **目录源默认是空的**:本插件不带任何第三方图库市场地址(不去装别人收集的表情包),要挂自己的目录见文末「目录源配置」。
 
 插件拿到清单后会:
 
@@ -54,7 +59,7 @@
 
 ## 图库目录
 
-设置页「图库市场 → 发现」的主目录来自 [`yyh-001/dsh-meme-packs`](https://github.com/yyh-001/dsh-meme-packs) 的 `catalog.json`（经 jsDelivr/raw 双源拉取）。目录既接受原来的数组，也接受更适合独立仓库的 `{ "packs": [] }`：
+设置页「图库市场 → 发现」的内容来自**图库目录**(默认不配 = 这里列不出东西)。目录既接受裸数组，也接受更适合独立仓库的 `{ "packs": [] }`：
 
 ```json
 {
@@ -129,18 +134,25 @@
 - 导出 ZIP 是**未压缩** ZIP，只打包索引里列到的图（不带 `.git`、备份、缩略图等杂物）。导入校验：必须有 `index.db`；ZIP 内 `manifest.json.id` 与请求 id 不一致会拒绝；条目路径越界会拒绝。走市场的 ZIP 还要求 ≤100MB 并核对 `sha256`。
 - `previews/` 目录**不是**插件需要的，那是宣传页/市场条目做预览图用的约定。
 
-## 目录源覆盖
+## 目录源配置
 
-插件按顺序试这几个源，第一个能用的为准：
+本插件**内置的目录源是空数组**（`index.js` 的 `DEFAULT_REMOTE_DIR_URLS = []`）—— 也就是说，装完之后「发现」页默认什么都没有，这是有意的：图库目录代表"谁提供内容、谁负责版权"，不该默认指向别人收集的表情包。
 
-1. `raw.githubusercontent.com/.../dsh-meme-packs/main/catalog.json`
-2. `cdn.jsdelivr.net/gh/.../dsh-meme-packs@main/catalog.json`（raw 被墙时的兜底）
-3. 本仓库 [`docs/remote-packs.json`](./remote-packs.json)（留作兼容回退）
+自己挂目录时按这个优先级（每层覆盖上一层，**每次请求现读，改完不用重启**）：
 
-**raw 放前面是因为时效**：jsDelivr 对 `@main` 是按仓库缓存的（边缘 12h、浏览器更久），push 之后它会继续吐旧内容，带时间戳也绕不过它的 shield——所以改了 catalog 记得顺手清一下它的缓存：
+1. 用户设置：`~/.dsh/dsh-expression.json` 里写 `"remoteDirUrl": "https://你的地址/catalog.json"`
+   （也可以给数组，例如 `["https://cdn.example.com/memes/catalog.json", "https://backup.example.com/memes/catalog.json"]`）
+2. patch 配置：`config.remoteDirUrl`（跟着 profile 的插件配置走）
+3. 代码里的 `DEFAULT_REMOTE_DIR_URLS`（发布版写死的那一份）
 
-```bash
-curl https://purge.jsdelivr.net/gh/yyh-001/dsh-meme-packs@main/catalog.json
-```
+几个实操要点：
 
-拉目录时会带 `?t=<时间戳>` 挡中间层（透明代理）的缓存，进程内还有 60 秒缓存，不会打爆上游。内网或调试场景可在 `~/.dsh/dsh-expression.json` 里写 `"remoteDirUrl": "https://你的地址/catalog.json"`（或 patch config 的 `remoteDirUrl`），改动即时生效，不用重启。
+- **多源按顺序试**，第一个能用的为准；某个源能拉到但目录是空的，会继续试后面的源，全都空才当空目录。
+- 拉目录时带 `?t=<时间戳>` 挡中间层（透明代理）缓存，进程内还有 **60 秒**缓存。
+- **别把目录放在 `raw.githubusercontent.com`**：2026-10-11 实测，本机对它四轮只成功一次，失败是 10~12 秒超时；jsDelivr 各节点 124~435ms 稳定。raw 适合"新鲜优先"的场景，但目录文件几个月才动一次，**稳定性优先**。
+- 用 jsDelivr 镜像时注意它按仓库缓存 `@main`（边缘 12h），改了 catalog 顺手清一下：
+  ```bash
+  curl https://purge.jsdelivr.net/gh/<owner>/<repo>@main/<path>
+  ```
+- 目录里每个条目至少要有 `archiveUrl`（整包 ZIP）或 `manifestUrl`（逐图清单），两者都没有的条目会被过滤掉。
+- 内网/调试想临时换源：改 `~/.dsh/dsh-expression.json` 的 `remoteDirUrl` 即可，即时生效。

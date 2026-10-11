@@ -1066,7 +1066,13 @@ window.__ModuleLoader__.load({
                               .catch(() => {})
                           },
                         }, '重新拉取目录'))
-                    : '目录暂无内容'))
+                    : h(React.Fragment, null,
+                        // [patch-dsh-gengtu-nomarket] 没配目录源(默认就是空的)时的空态:
+                        // 说清"这里只列目录里的包",并给出去处,别让人以为插件坏了
+                        h('div', null, '还没有可用的图库目录'),
+                        h('div', { style: { fontSize: 11, marginTop: 4, color: 'var(--dsw-alias-label-secondary)' } },
+                          '这里只列「图库目录」里的包。想装自己的图库:去「图库」页点「导入图库」选 ZIP,或在「设置」里填扫描目录。'),
+                      )))
           : h('div', { className: 'mk-grid' }, discoverCards.map((row) => packCard(row, [
             // 发现页只负责装:装过的这里不给按钮,更新去图库页(有新版本才显示)
             row.downloaded ? null : h('button', {
