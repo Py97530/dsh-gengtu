@@ -114,21 +114,27 @@ window.__ModuleLoader__.load({
     }
     const tagZh = (t) => TAG_ZH[t] || t
 
+    // [patch-dsh-meme-auth] 页面对本插件 API 的每个请求都得带来源校验头。
+    // 关键:同源 GET 浏览器不发 Origin,只发 POST 那种才带 —— 所以 GET 也必须带头,
+    // 否则宿主按"缺 Origin 且无 x-dsh-meme"拒掉(403),表现就是图库列表/搜索/发现页全空。
+    function memeApiHeaders(extra) {
+      return {
+        'x-dsh-meme': '1',
+        ...(window.__DSH_MEME_TOKEN__ ? { 'x-dsh-meme-token': window.__DSH_MEME_TOKEN__ } : {}),
+        ...(extra || {}),
+      }
+    }
     async function apiGet(params) {
       const qs = new URLSearchParams()
       if (params.tag) qs.set('tag', params.tag)
       if (params.q) qs.set('q', params.q)
       if (params.remoteDir) qs.set('remoteDir', '1')
-      return (await fetch('/dsh-memes-api?' + qs.toString())).json()
+      return (await fetch('/dsh-memes-api?' + qs.toString(), { headers: memeApiHeaders() })).json()
     }
     async function apiPost(payload) {
       return (await fetch('/dsh-memes-api', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-dsh-meme': '1', // [patch-dsh-meme-auth]
-          ...(window.__DSH_MEME_TOKEN__ ? { 'x-dsh-meme-token': window.__DSH_MEME_TOKEN__ } : {}),
-        },
+        headers: memeApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
       })).json()
     }
@@ -378,7 +384,7 @@ window.__ModuleLoader__.load({
           return
         }
         try {
-          const res = await fetch('/dsh-memes-api?packId=' + encodeURIComponent(row.packId)).then((r) => r.json())
+          const res = await fetch('/dsh-memes-api?packId=' + encodeURIComponent(row.packId), { headers: memeApiHeaders() }).then((r) => r.json())
           const urls = (res && Array.isArray(res.memes)) ? res.memes.map((m) => m.url).filter(Boolean) : []
           if (urls.length) {
             setPreviewPack((cur) => (cur && cur.packId === row.packId
@@ -1048,7 +1054,18 @@ window.__ModuleLoader__.load({
               mkQuery
                 ? '没有匹配的图库'
                 : (remoteDir === null
-                    ? '图库目录暂不可用(检查网络或稍后重试)'
+                    ? h(React.Fragment, null,
+                        h('div', null, '图库目录暂不可用(检查网络或稍后重试)'),
+                        h('div', { style: { fontSize: 11, marginTop: 4, color: 'var(--dsw-alias-label-secondary)' } },
+                          '插件会按顺序试多个目录源;外网节点偶尔抽风,重拉一次通常就好。'),
+                        h('button', {
+                          style: { marginTop: 8 },
+                          onClick: () => {
+                            apiGet({ remoteDir: 1 })
+                              .then((res) => { if (res && res.ok) setRemoteDir(Array.isArray(res.remoteDir) ? res.remoteDir : null) })
+                              .catch(() => {})
+                          },
+                        }, '重新拉取目录'))
                     : '目录暂无内容'))
           : h('div', { className: 'mk-grid' }, discoverCards.map((row) => packCard(row, [
             // 发现页只负责装:装过的这里不给按钮,更新去图库页(有新版本才显示)
@@ -1389,7 +1406,7 @@ window.__ModuleLoader__.load({
         let alive = true
         const qs = new URLSearchParams()
         if (packId) qs.set('packId', packId)
-        fetch('/dsh-memes-api?' + qs.toString())
+        fetch('/dsh-memes-api?' + qs.toString(), { headers: memeApiHeaders() })
           .then((r) => r.json())
           .then((res) => {
             if (!alive || !res || !res.ok) return
@@ -1672,7 +1689,7 @@ window.__ModuleLoader__.load({
         const controller = typeof AbortController === 'function' ? new AbortController() : null
         const timeoutTimer = controller ? setTimeout(() => controller.abort(), MEME_INDEX_TIMEOUT) : 0
         // 拉全部包(带包前缀 URL),任意组的 [表情: 描述] 都能配图
-        fetch('/dsh-memes-api?packId=all', controller ? { signal: controller.signal } : undefined)
+        fetch('/dsh-memes-api?packId=all', { headers: memeApiHeaders(), ...(controller ? { signal: controller.signal } : {}) })
           .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json() })
           .then((res) => {
             const rows = (res && res.memes) || []

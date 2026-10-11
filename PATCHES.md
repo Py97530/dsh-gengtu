@@ -33,3 +33,18 @@
 
 `[patch-dsh-meme-auth]` 之后，导出/删除/改提示词这类操作要带 `x-dsh-meme: 1` 头；
 令牌落在 `~/.dsh/dsh-expression.token`，本机脚本用 `_plugin_work/add-auth-headers.mjs` 统一补过。
+
+## 2026-10-11 事后修复（auth 加固的两个漏网之鱼）
+
+1. **页面侧的 GET 没带头**：浏览器对**同源 GET 不发 `Origin`**，只对跨站/非 GET 才发。
+   加固后的宿主把「无 Origin 且无 `x-dsh-meme`」一律 403 —— 于是页面里 5 处请求全会被拒：
+   `apiGet`（发现页目录 + 搜索）、图库包预览、选择器取全部包、**表情索引 `packId=all`**
+   （这个一挂，模型发的 `[表情: …]` 就全变纯文字）。
+   修法：client.js 新增 `memeApiHeaders()`，**所有** API 调用点统一带头（含 GET）。
+2. **宿主侧再认一条 `sec-fetch-site: same-origin`**：浏览器同源请求必发这个头，
+   作为「页面漏带头」的兜底，免得以后再漏一处就把功能打成空白。
+   （它不降低安全性：本机进程照样能伪造它，真正的护栏是高风险 op 的令牌。）
+
+同批顺带：发现页空态加「重新拉取目录」按钮；默认目录源加 `fastly.jsdelivr.net` /
+`testingcf.jsdelivr.net` 两个备用节点（`raw.githubusercontent.com` 本机不通）；
+「空目录源」不再顶掉后面的真目录。

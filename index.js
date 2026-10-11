@@ -175,6 +175,10 @@ const ROUTE = '/dsh-memes'
 export const DEFAULT_REMOTE_DIR_URLS = [
   'https://raw.githubusercontent.com/yyh-001/dsh-meme-packs/main/catalog.json',
   'https://cdn.jsdelivr.net/gh/yyh-001/dsh-meme-packs@main/catalog.json',
+  // jsDelivr 的备用节点:国内 cdn.jsdelivr.net 抽风时顶上来
+  // (2026-10-11 本机实测:raw.githubusercontent 两个源都 ECONNRESET,cdn/fastly/testingcf 三个 jsDelivr 节点都 200)
+  'https://fastly.jsdelivr.net/gh/yyh-001/dsh-meme-packs@main/catalog.json',
+  'https://testingcf.jsdelivr.net/gh/yyh-001/dsh-meme-packs@main/catalog.json',
   'https://raw.githubusercontent.com/yyh-001/dsh-meme/main/docs/remote-packs.json',
   'https://cdn.jsdelivr.net/gh/yyh-001/dsh-meme@main/docs/remote-packs.json',
 ]
@@ -778,6 +782,7 @@ export function apply(ctx, config) {
 
     const fetchRemoteDirectory = async () => {
       if (remoteDirCache && Date.now() - remoteDirCache.at < 60000) return remoteDirCache.data
+      let sawEmpty = null // 遇到「能拉到但目录是空的」源:记住它,继续往下试,全都空才当空目录返回
       for (const u of [].concat(remoteDirUrls() || [])) {
         try {
           let res
@@ -795,11 +800,12 @@ export function apply(ctx, config) {
           const list = Array.isArray(raw) ? raw : (Array.isArray(raw && raw.packs) ? raw.packs : null)
           if (!list) throw new Error('目录不是数组或 { packs: [] }')
           const data = list.filter((e) => e && (e.manifestUrl || e.archiveUrl))
+          if (data.length === 0) { sawEmpty = data; throw new Error('这个源是空目录,继续试下一个源') }
           remoteDirCache = { at: Date.now(), data }
           return data
         } catch { /* 试下一个源 */ }
       }
-      return null
+      return sawEmpty
     }
     const jobSnapshot = (job) => ({
       id: job.id, packId: job.packId, name: job.name, mode: job.mode,
@@ -1280,7 +1286,9 @@ export function apply(ctx, config) {
             json(res, { ok: false, error: '跨站请求被拒绝' }, 403)
             return
           }
-        } else if (String(authHdr || '') !== '1') { // [patch-dsh-meme-auth]
+        } else if (String(authHdr || '') !== '1' && String(req.headers['sec-fetch-site'] || '') !== 'same-origin') { // [patch-dsh-meme-auth]
+          // 浏览器同源 GET 不发 Origin(只有跨站/非 GET 才发),所以这里再认一条 sec-fetch-site:
+          // 否则页面侧任何一个漏带头的 GET(图库列表、搜索、发现页、表情索引)都会被 403 打成空白。
           json(res, { ok: false, error: '缺少来源校验头(本地脚本请带 x-dsh-meme: 1)' }, 403)
           return
         }
