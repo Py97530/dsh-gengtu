@@ -1612,6 +1612,11 @@ window.__ModuleLoader__.load({
       .replace(/[\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f«»]/g, '"')
       .replace(/\s+/g, ' ')
     const looseCaption = (s) => foldCaption(s).replace(/["'\s]/g, '')
+    // [patch-dsh-meme-matchspec] 标点盲的归一形：连中英文标点一起去掉,只留字与词。
+    // 模型写描述时经常把逗号换成空格、把句号省掉,甚至把两层引号改成一层;
+    // 整串比对必须对这种写法免疫,否则「同一个梗的两种排版」会掉进分词兜底配错图。
+    const PUNCT_RE = /[\s,.!?;:、，。！？；：""''""''「」『』（）()\[\]【】《》〈〉…·～~\-—_/\\|+*#@!?。，、]+/g
+    const stripPunct = (s) => foldCaption(s).replace(PUNCT_RE, '')
     // 描述里按中英文标点切词,长词优先(两字以下太泛,不参与匹配)。
     const splitDescTokens = (s) => foldCaption(s)
       .split(/[\s,.!?;:、，。！？；：""''()（）\[\]【】《》…·～~\-]+/)
@@ -1626,23 +1631,45 @@ window.__ModuleLoader__.load({
         const f = foldCaption(s)
         if (!f) continue
         const l = looseCaption(s)
-        hay.push(f, ...(l && l !== f ? [l] : []))
+        const p = stripPunct(s) // [patch-dsh-meme-matchspec]
+        hay.push(f, ...(l && l !== f ? [l] : []), ...(p && p !== f && p !== l ? [p] : []))
         parts.push(s)
       }
       const tokens = [...new Set(splitDescTokens(parts.join(' ')))]
       return { hay, tokens, url: toUrl(row) }
     })
     // 组合匹配:精确(原文/折叠/紧凑三级)→ 分词在 caption/关键词里双向包含。
+    // [patch-dsh-meme-matchspec] 两个鲁棒性补丁(2026-10-11,用户报「点了表情包却出一行注释文字」):
+    //   ① splitDescTokens 按「长词优先」排,而下面的包含匹配「先命中就返回」——于是描述里
+    //      最泛的那个词(如「一只猫」)会抢在真正区分性的词前面把行号定死,同一张图的不同
+    //      写法能配到完全不同的图(实测:「灰白小猫坐下来周身冒星星…」带句号命中 happy、
+    //      不带句号命中 angry)。改成**短词优先**:短词信息量低但要全字命中、误配面更小。
+    //   ② 描述≥10 字时,先拿整串描述在所有行里找**唯一**的双向包含行。模型改写描述(去掉
+    //      尾巴、少一个句号、换个标点)在这条路上就能救回来,不用掉进分词那一步。
     const matchDesc = (desc, index, search) => {
+      const raw = String(desc || '').trim()
       if (index) {
-        const raw = String(desc || '').trim()
         const exact = index.get(raw) || index.get(foldCaption(raw)) || index.get(looseCaption(raw))
         if (exact) return exact
       }
-      for (const token of splitDescTokens(desc)) {
+      const rows = search || []
+      // 整串包含用**标点盲**的归一形（stripPunct）：模型爱把句读写成空格、把句号省掉，
+      // 而索引里的原文是全角逗号，两边一归一就能对上 —— 这一步是「同一张图的两种排版」
+      // 不被打分兜底抢走的关键。
+      const whole = stripPunct(raw)
+      if (whole.length >= 10) {
+        let found = null
+        for (const row of rows) {
+          if (!(row.hay || []).some((hay) => hay.includes(whole) || whole.includes(hay))) continue
+          if (found && found !== row.url) { found = null; break } // 不止一张像 → 不敢乱认
+          found = row.url
+        }
+        if (found) return found
+      }
+      for (const token of [...splitDescTokens(desc)].sort((a, b) => a.length - b.length)) {
         const needle = looseCaption(token)
         if (!needle) continue
-        for (const row of search || []) {
+        for (const row of rows) {
           if (row.hay.some((hay) => hay.includes(needle))) return row.url
           if ((row.tokens || []).some((t) => { const lt = looseCaption(t); return lt && (needle.includes(lt) || lt.includes(needle)) })) return row.url
         }
@@ -1897,6 +1924,24 @@ installMemeZoom();
   ].join('')
   document.head.appendChild(st)
 })();
+// [patch-dsh-meme-noflip] 用 CSS（而不是 JS 改显示）把「已经配到图」的 [表情: 描述] 原文藏掉。
+// 用户反馈（2026-10-11）：点了表情包发出去，气泡里先闪一整行给模型看的注释文字，要等一拍才
+// 变图。宿主流式渲染会在我们注入之后重写纯文本子节点，JS 隐藏会被它翻回来；CSS 规则每次都
+// 重新求值，盖得住。只对**兄弟里有 img[data-meme-hide-raw] 的文本**和**正在配图的
+// [data-meme-pending]** 生效——真配不上图（降级成描述文字）时没有任何 img，原文照旧可见，
+// 不会出现「空气泡」。ghost（display:none，存着原文供别的插件比对）不受影响。
+;(() => {
+  if (document.getElementById('dsh-meme-noflip-css')) return
+  const st = document.createElement('style')
+  st.id = 'dsh-meme-noflip-css'
+  st.textContent = [
+    'img[data-meme-hide-raw]~span:not([data-meme-hidden]),img[data-meme-hide-raw]~div:not([data-meme-hidden]),img[data-meme-hide-raw]~p:not([data-meme-hidden]){display:none!important}',
+    // 4s 兜底：动画结束状态是「显示」——配图一直没回来也不会留一个空气泡。
+    '[data-meme-pending] span:not([data-meme-hidden]){display:none!important;animation:dsh-meme-noflip-show 4s step-end 1 forwards}',
+    '@keyframes dsh-meme-noflip-show{0%,99.9%{display:none}100%{display:inline}}',
+  ].join('')
+  document.head.appendChild(st)
+})();
 // [patch-dsh-meme-hover] 悬停预览：停 140ms 浮出大图 + 描述
 const installMemeHoverPreview = () => {
   if (window.__dshMemeHover) return
@@ -2041,6 +2086,14 @@ const decorateMemeText = () => {
           }
           parent.dataset.memeDecorated = '1'
           delete parent.dataset.memeDegradedAt // [patch-dsh-meme-index] 装饰成功 → 不再是降级态
+          // [patch-dsh-meme-noflip] 这一条消息里有「配得到图」的标记 → 先把整个 text 节点按
+          // 「配图中」藏起来（CSS 规则），图注入完成的瞬间这里就撤标记。索引里没有对应图、
+          // 后面走降级分支时也不会留标记（只有 fig 配到才设）。万一图片请求挂了，样式表里
+          // 那个 4s 兜底动画会把原文放回来，不会留一个空气泡。
+          if (matches.some((hit) => hit[2] || findMemeUrl(memeTokenLabel(hit)))) {
+            parent.dataset.memePending = '1'
+            parent.dataset.memePendingAt = String(Date.now())
+          }
           const frag = document.createDocumentFragment()
           const imgs = []
           let last = 0
@@ -2054,6 +2107,9 @@ const decorateMemeText = () => {
               img.alt = hit[0].slice(0, 60)
               // [patch-dsh-meme-notitle] 不留 title：鼠标停在图上也别浮出描述文字
               img.dataset.memeImg = foldCaption(label) // 去重用的描述标记 // [patch-dsh-meme-dualcode]
+              // [patch-dsh-meme-noflip] 图已经拿到手了 → 让 CSS 把同一层的注释原文吃掉
+              // （没走「配图中」那条路的命中——例如插了短码的老消息——也一并藏掉）。
+              img.setAttribute('data-meme-hide-raw', '1')
               img.style.cssText = 'max-width:var(--dsh-meme-inline-size,130px);max-height:var(--dsh-meme-inline-size,130px);border-radius:10px;display:block;margin:8px 0'
               frag.appendChild(img)
               frag.appendChild(ghostFor(hit[0]))
@@ -2075,6 +2131,10 @@ const decorateMemeText = () => {
           }
           if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)))
           parent.replaceChild(frag, node)
+          // [patch-dsh-meme-noflip] 图已经落到 DOM 上，撤掉「配图中」标记，交给
+          // img[data-meme-hide-raw] 那条规则继续压着原文。
+          delete parent.dataset.memePending
+          delete parent.dataset.memePendingAt
           const row = parent.closest('[data-time-hover-root],[data-chat-flow-key]')
           if (row && imgs.length > 0) {
             // 用户 / steering 消息是右对齐的,但那个右对齐挂在气泡外面那层 flex 列容器

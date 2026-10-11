@@ -33,6 +33,8 @@
 | index.js | `[patch-dsh-gengtu-noseed]` | 包里不再带那 24 张种子图；启动前 `ensureLibrary()` 就地建空库 | 那批图授权是 `personal`，不能再随包分发；缺索引又会让插件整个装不起来，所以空库得能自己建出来 |
 | index.js | `[patch-dsh-gengtu-remotedir-ui]` | 新增 `setRemoteDirUrl` op（高风险，要令牌）+ 返回 `remoteDirUser` | 设置页要能填「图库目录」，以前只能手改 `~/.dsh/dsh-expression.json` |
 | client.js | `[patch-dsh-gengtu-remotedir-ui]` | 设置页「图库目录」输入框 + 保存 | 同上 |
+| client.js | `[patch-dsh-meme-matchspec]` | 描述匹配三处加固：整串**标点盲**唯一命中优先（≥10 字）、分词兜底改成短词优先、haystack 多一档去标点形 | 模型不抄候选原文时（少个句号、把逗号写成空格）同一张图会配到别的行；「先命中就返回」让最泛的长词（「一只猫」）抢走判定 |
+| client.js | `[patch-dsh-meme-noflip]` | 纯 CSS 把「已配到图」的 `[表情: 描述]` 原文吃掉（`img[data-meme-hide-raw]` 兄弟选择器），配图中先压 4s 兜底动画，失败自动放回原文 | 用户报：点了表情包发出去，气泡里先闪一整行给模型看的注释文字再变图；JS 隐藏会被宿主流式渲染重写翻回来 |
 
 ## 高风险操作令牌
 
