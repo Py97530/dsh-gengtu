@@ -161,6 +161,7 @@ window.__ModuleLoader__.load({
       const [packs, setPacks] = React.useState([])
       const [packsDir, setPacksDir] = React.useState('')
       const [packsDirInput, setPacksDirInput] = React.useState('')
+      const [remoteDirInput, setRemoteDirInput] = React.useState('') // [patch-dsh-gengtu-remotedir-ui] 目录源输入框
       const [rootNotice, setRootNotice] = React.useState('')
       const [browseOpen, setBrowseOpen] = React.useState(false)
       const [browseList, setBrowseList] = React.useState(null)
@@ -187,6 +188,7 @@ window.__ModuleLoader__.load({
         setPluginVersion(res.pluginVersion || '')
         setPacksDir(res.packsDir || '')
         setPacksDirInput(res.packsDir || '')
+        setRemoteDirInput(Array.isArray(res.remoteDirUser) ? res.remoteDirUser.join('\n') : String(res.remoteDirUser || ''))
         setCompanionPrompt(res.companionPrompt || '')
         setDefaultPrompt(res.defaultCompanionPrompt || '')
         setRemoteSubs(Array.isArray(res.remoteSubs) ? res.remoteSubs : [])
@@ -511,6 +513,24 @@ window.__ModuleLoader__.load({
           if (res && res.ok) {
             applyRoot(res)
             setRootNotice('已更新扫描目录')
+          } else {
+            setRootNotice('保存失败: ' + (res && res.error || ''))
+          }
+        } catch (e) {
+          setRootNotice('保存失败')
+        }
+      }
+      // [patch-dsh-gengtu-remotedir-ui] 保存「图库目录」:一行一个地址(逗号/空格也吃),留空 = 不挂目录。
+      const onSaveRemoteDir = async () => {
+        const list = String(remoteDirInput || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean)
+        for (const u of list) {
+          if (!/^https?:\/\//i.test(u)) { setRootNotice('地址要以 http(s):// 开头: ' + u); return }
+        }
+        try {
+          const res = await apiPost({ op: 'setRemoteDirUrl', remoteDirUrl: list })
+          if (res && res.ok) {
+            applyRoot(res)
+            setRootNotice(res.message || '已保存')
           } else {
             setRootNotice('保存失败: ' + (res && res.error || ''))
           }
@@ -1112,6 +1132,18 @@ window.__ModuleLoader__.load({
           h('button', { onClick: () => onPickDir() }, '选择目录'),
           h('button', { className: 'btn-primary', onClick: () => onSavePacksDir() }, '保存'),
         ),
+        h('div', { className: 'section-title' }, '图库目录（「发现」页列什么）'), // [patch-dsh-gengtu-remotedir-ui]
+        h('div', { className: 'row', style: { width: '100%' } },
+          h('input', {
+            type: 'text', value: remoteDirInput,
+            onChange: (e) => setRemoteDirInput(e.target.value),
+            placeholder: '目录 JSON 地址,多个用逗号/换行分隔;留空 = 不挂任何目录',
+            style: { flex: 1, minWidth: 160 },
+          }),
+          h('button', { className: 'btn-primary', onClick: () => onSaveRemoteDir() }, '保存'),
+        ),
+        h('div', { style: { fontSize: 11, marginTop: 4, color: 'var(--dsw-alias-label-secondary)' } },
+          '填自己的静态目录地址就能让别人在「发现」页一键装你的图库(格式见 docs/remote-pack-spec.md);留空则「发现」页没有内容。'),
         h('div', { className: 'section-title' }, '陪伴提示词'),
         h('div', { className: 'row' },
           h('span', {

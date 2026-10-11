@@ -75,6 +75,10 @@ test('index.js 是合法的 cordis 插件，自带的 ZIP 读写能闭环', asyn
   assert.equal(typeof mod.apply, 'function')
   assert.ok(mod.inject.includes('tools') && mod.inject.includes('webServer'))
 
+  // 默认不挂任何上游图库目录：别人家的图（授权多为 personal / noncommercial）不跟着转发，
+  // 要挂哪个目录由用户自己在设置里填。
+  assert.deepEqual(mod.DEFAULT_REMOTE_DIR_URLS, [], 'DEFAULT_REMOTE_DIR_URLS 不该再指向上游市场')
+
   // 自己写的 store-only ZIP：打包 → 解包 → 逐字节相同（中文文件名 + 二进制内容）
   const files = [
     { name: 'manifest.json', data: Buffer.from(JSON.stringify({ name: '测试图库' }), 'utf8') },
@@ -130,31 +134,42 @@ test('真·发布包能解开，且索引条数与图片数对得上（本地有
   }
 })
 
-test('图库模块：能扫到内置包、能打开索引、路径不许越界', async () => {
+test('图库模块：能就地建空库、能打开索引、路径不许越界', async () => {
   const memes = await import(pathToFileURL(path.join(ROOT, 'memes.js')).href)
-  const bundled = memes.bundledPacksDir()
-  assert.ok(fs.existsSync(bundled), '内置图库目录不存在: ' + bundled)
-
-  const packs = memes.scanPacks(bundled)
-  assert.ok(packs.length >= 1, '内置包没被扫到')
-  const first = packs[0]
-  assert.ok(first.count > 0, '内置包是空库')
-
-  const root = memes.resolveActiveRoot({}, bundled + '/dafeiyu-001')
-  assert.ok(fs.existsSync(path.join(root, 'index.db')), 'resolveActiveRoot 没给出可用目录: ' + root)
-
-  const store = new memes.MemesStore(root)
+  const os = await import('node:os')
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-gengtu-lib-'))
   try {
-    const listed = store.list()
-    assert.equal(listed.memes.length, first.count)
-    assert.ok(listed.tags.length > 0, '情绪桶列表是空的')
-    assert.ok(Array.isArray(store.search('猫', 5).memes))
-    assert.ok(memes.moodNames().length > 0)
+    // 包里不再自带图片（原来那 24 张原作者授权是 personal）⇒ 宿主首次启动必须能自己建出空库，
+    // 否则 MemesStore 缺索引抛错、apply 直接 return，表现就是「插件没装上」。
+    const root = memes.ensureLibrary(path.join(tmp, 'empty'))
+    assert.ok(fs.existsSync(path.join(root, 'index.db')), 'ensureLibrary 没建出索引: ' + root)
 
-    const row = listed.memes[0]
-    assert.ok(fs.existsSync(store.resolveStored(row.path)), '索引里的路径解析不出文件')
-    assert.throws(() => store.resolveStored('../../../etc/passwd'), /超出/)
+    const store = new memes.MemesStore(root)
+    try {
+      const listed = store.list()
+      assert.equal(listed.memes.length, 0, '空库应该是 0 张')
+      assert.ok(listed.tags.length > 0, '情绪桶列表是空的')
+      assert.ok(Array.isArray(store.search('猫', 5).memes))
+      assert.ok(memes.moodNames().length > 0)
+      assert.throws(() => store.resolveStored('../../../etc/passwd'), /超出/)
+    } finally {
+      store.close()
+    }
+
+    // 没有自带包时默认库落在 <home>/.dsh/meme-packs/default，而且建得出来、打得开
+    const prevHome = process.env.DSH_MEME_HOME
+    process.env.DSH_MEME_HOME = tmp
+    try {
+      const fallback = memes.defaultMemeRoot()
+      assert.equal(fallback, path.join(tmp, '.dsh', 'meme-packs', 'default'), '默认库位置不对: ' + fallback)
+      const made = memes.ensureLibrary(fallback)
+      const st2 = new memes.MemesStore(made)
+      st2.close()
+    } finally {
+      if (prevHome === undefined) delete process.env.DSH_MEME_HOME
+      else process.env.DSH_MEME_HOME = prevHome
+    }
   } finally {
-    store.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
   }
 })

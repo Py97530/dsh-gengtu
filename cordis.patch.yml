@@ -12,7 +12,7 @@
 # 图库目录不在这里写死(上游踩过的坑:patch 里硬编码某台机器的 memeRoot,
 # 别的用户装完指向不存在的目录,插件直接起不来)。
 # 用户在设置页下拉切换图库,保存到 ~/.dsh/dsh-expression.json;
-# 默认用包内置图库 memes/dafeiyu-001。
+# 包里不带图片(见 memes/README.md):没配过图库时宿主就地建一个空库。
 - insert:
     - id: dsh-expression
       name: dsh-gengtu

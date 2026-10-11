@@ -140,7 +140,8 @@
 
 自己挂目录时按这个优先级（每层覆盖上一层，**每次请求现读，改完不用重启**）：
 
-1. 用户设置：`~/.dsh/dsh-expression.json` 里写 `"remoteDirUrl": "https://你的地址/catalog.json"`
+1. 用户设置：**设置页「图库目录」输入框**（一行一个地址，推荐）—— 存的就是
+   `~/.dsh/dsh-expression.json` 里的 `"remoteDirUrl": "https://你的地址/catalog.json"`
    （也可以给数组，例如 `["https://cdn.example.com/memes/catalog.json", "https://backup.example.com/memes/catalog.json"]`）
 2. patch 配置：`config.remoteDirUrl`（跟着 profile 的插件配置走）
 3. 代码里的 `DEFAULT_REMOTE_DIR_URLS`（发布版写死的那一份）

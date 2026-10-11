@@ -35,14 +35,18 @@ dsh plugin --profile desktop add file:/绝对路径/dsh-gengtu
 - 图库目录：`~/.dsh/meme-packs/<包名>/`，结构是 `index.db` + `manifest.json` + `memes/<情绪桶>/<文件>`。
 - 设置页能：切换图库、导入 / 导出整包 ZIP、扫描目录；「发现」页列出**图库目录**里的远程图库，点一下就装。
 - **「发现」页默认是空的**：本插件不内置任何第三方图库市场地址（不去装别人收集的表情包）。
-  要挂自己的目录：在 `~/.dsh/dsh-expression.json` 里写 `"remoteDirUrl": "https://你的地址/catalog.json"`
-  （或加进 `index.js` 的 `DEFAULT_REMOTE_DIR_URLS`），格式见 [`docs/remote-pack-spec.md`](docs/remote-pack-spec.md)。
-- **本仓库不打包大图库**：网络收集的梗图版权不属于本项目，包里只带 0.9MB 的示例库（大肥鱼 24 张，随上游包 MIT 分发）。
+  要挂自己的目录：直接在**设置页「图库目录」**里填（一行一个地址，留空即不挂），
+  格式见 [`docs/remote-pack-spec.md`](docs/remote-pack-spec.md)；也能手写 `~/.dsh/dsh-expression.json`
+  的 `"remoteDirUrl"`，或加进 `index.js` 的 `DEFAULT_REMOTE_DIR_URLS`（那是给 fork 改默认值用的）。
+- **本仓库不带任何图片**：网络收集的梗图版权不属于本项目；早先随包发的那 24 张示例图
+  （大肥鱼，来自上游 dsh-meme）授权是 `personal`，不能再分发，已撤出仓库。
+  所以装好第一件事是喂图：**上传**、让模型 `learn_meme` 学图、**导入 ZIP**，或把「扫描目录」
+  指到一个已经装好图库的父目录。空库也能正常用（宿主首次启动会就地建出来，见 `memes/README.md`）。
 
 ## 版权与删除请求
 
 - **代码**：MIT，见 [`LICENSE`](LICENSE)（保留原项目版权行，这是 MIT 的要求）。
-- **梗图**：版权归各自原作者。本项目**不再分发**任何网络收集的图片；示例库来自上游 dsh-meme。
+- **梗图**：版权归各自原作者。本项目**不再分发**任何图片（含早先那批 `personal` 授权的示例图）。
 - 如果你是某张图的作者并要求移除：开一个 issue（面板底部有直达按钮），说明是哪张，我们删。
 
 ## 测试

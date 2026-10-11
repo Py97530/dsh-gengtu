@@ -30,6 +30,9 @@
 | index.js | `[patch-dsh-meme-hardening]` | 上传限 8MB + 魔术字节校验；`learn_meme` 拒绝内网地址 | 无上限上传、SSRF |
 | index.js | `[patch-dsh-gengtu-nomarket]` | `DEFAULT_REMOTE_DIR_URLS` 留空；没配源时按「空目录」返回 | 默认去装别人收集的表情包，版权与归属都不对；也别把「没配源」报成「网络挂了」 |
 | client.js | `[patch-dsh-gengtu-nomarket]` | 发现页空态文案（「还没有可用的图库目录」+ 去处提示） | 同上 |
+| index.js | `[patch-dsh-gengtu-noseed]` | 包里不再带那 24 张种子图；启动前 `ensureLibrary()` 就地建空库 | 那批图授权是 `personal`，不能再随包分发；缺索引又会让插件整个装不起来，所以空库得能自己建出来 |
+| index.js | `[patch-dsh-gengtu-remotedir-ui]` | 新增 `setRemoteDirUrl` op（高风险，要令牌）+ 返回 `remoteDirUser` | 设置页要能填「图库目录」，以前只能手改 `~/.dsh/dsh-expression.json` |
+| client.js | `[patch-dsh-gengtu-remotedir-ui]` | 设置页「图库目录」输入框 + 保存 | 同上 |
 
 ## 高风险操作令牌
 
@@ -64,3 +67,18 @@
 顺带记一笔实测数据（用来定"别用 raw"这条规矩）：
 `raw.githubusercontent.com` 四轮里成功 1 次、其余是 10~12 秒超时；`cdn/fastly/testingcf.jsdelivr.net`
 节点 124~435ms 稳定；`?t=` 时间戳不影响成败（带的时候反而更快）。
+
+## 2026-10-11 第三刀：包里不再带图 + 图库目录可填
+
+1. **撤掉随包分发的 24 张种子图**（`memes/dafeiyu-001`）。它们的 `license` 是 `personal`
+   —— 个人可以用，**不能随包再分发**。图挪到仓库外的归档里（`_plugin_work/`，不随包发）。
+   代价是装上不再有图，所以：
+   - `memes.js` 新增 `ensureLibrary()`：目录/`index.db` 缺了就地建一个空库；
+   - `defaultMemeRoot()`：有自带种子库就用它，没有则回落到 `<home>/.dsh/meme-packs/default`；
+   - `index.js` 启动与 `reloadMemeStore()` 都先过 `ensureLibrary()` —— 否则 `MemesStore`
+     会因缺索引抛错、`apply` 直接 `return`，表现是"插件没装上"（历史事故）；
+   - `memes/README.md` 写清空目录是故意的、以及想自带种子库时对图授权的要求。
+2. **设置页能填「图库目录」**（`setRemoteDirUrl`，进 `HIGH_RISK_OPS`，要本机令牌）。
+   一行一个地址，逗号/空格/分号都吃；留空 = 不挂任何目录。以前只能手改
+   `~/.dsh/dsh-expression.json`，等于把这个功能藏起来了。
+   `packPayload()` 只回用户自己设的值（`remoteDirUser`），别把解析后的默认值塞回输入框。

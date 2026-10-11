@@ -9,10 +9,10 @@ import { DatabaseSync } from 'node:sqlite'
 import { basename, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
-/** 内置图库根目录：插件包内 memes/<id>/（随包分发的只有 dafeiyu-001）。 */
+/** 内置图库根目录：插件包内 memes/<id>/（留作自研种子库的位置；默认包里不再带图）。 */
 export function bundledPacksDir() {
   return fileURLToPath(new URL('./memes', import.meta.url))
 }
@@ -27,9 +27,36 @@ export function dshHome() {
   return process.env.DSH_MEME_HOME || homedir()
 }
 
-/** 内置默认图库根：随插件分发的 memes/dafeiyu-001（大肥鱼）。可用 memeRoot 覆盖。 */
+/**
+ * 默认图库根。包里**不再自带图片**(原来随包发的 24 张,原作者授权是 personal,
+ * 不能再分发) —— 所以:还有自带种子库就用它;没有就回落到扫描目录下的空库
+ * `default`,由 ensureLibrary() 首次启动时就地建出来。设置里的 memeRoot 可覆盖。
+ */
 export function defaultMemeRoot() {
-  return join(bundledPacksDir(), 'dafeiyu-001')
+  const bundled = join(bundledPacksDir(), 'dafeiyu-001')
+  if (existsSync(join(bundled, 'index.db'))) return bundled
+  return join(defaultPacksDir(), 'default')
+}
+
+/** 空图库的建表语句（新建/初始化共用一份，别再各处手写一遍）。 */
+const LIBRARY_SCHEMA = 'CREATE TABLE IF NOT EXISTS memes (path TEXT PRIMARY KEY, tag TEXT, file_name TEXT, caption TEXT, keywords TEXT, mtime REAL, captioned_at REAL)'
+
+/**
+ * 打开图库前保证「目录 + index.db」都在：包里不带种子库时，首次启动就地建一个空库，
+ * 用户自己传图/学图往里填。少了这一步 MemesStore 会因缺索引抛错，调用方 return，
+ * 表现就是「插件根本没装上」（历史事故）。
+ * @returns {string} 解析后的绝对目录
+ */
+export function ensureLibrary(root = defaultMemeRoot()) {
+  const dir = resolve(root)
+  mkdirSync(dir, { recursive: true })
+  const indexPath = join(dir, 'index.db')
+  if (!existsSync(indexPath)) {
+    const db = new DatabaseSync(indexPath)
+    db.exec(LIBRARY_SCHEMA)
+    db.close()
+  }
+  return dir
 }
 
 /** 用户导入/自建图库的扫描目录。 */

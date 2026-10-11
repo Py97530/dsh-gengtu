@@ -8,8 +8,9 @@
  * 双语法短码([m:]/[表情:])、API 加固(缺 Origin 403 + 高危 op 令牌)、路径归一化、
  * 上传大小与魔术字节校验、learn_meme 拒内网。
  *
- * 图库:随插件分发 memes/dafeiyu-001 作为默认库;
- * 设置页扫描用户目录(~/.dsh/meme-packs)下拉切换。SQLite 索引 + memes/<tag>/。
+ * 图库:**包里不带图片**(原来那 24 张是 personal 授权,不能再分发,见 memes/README.md);
+ * 没配过图库时宿主用 ensureLibrary() 就地建一个空库,设置页可扫描用户目录
+ * (~/.dsh/meme-packs)下拉切换。SQLite 索引 + memes/<tag>/。
  * 用户自己的大图库(如 gengtu-2026)不进包、不进仓库,走本地目录或远程 catalog。
  *
  * 发送(双通道):
@@ -29,6 +30,7 @@ import { DatabaseSync } from 'node:sqlite'
 import {
   MemesStore, defaultPacksDir, scanPacks, readPackMeta, isPackDir,
   resolveActiveRoot, liveStore, registerSendMemeTool, dshHome, enabledPackIds, packDeleteDir,
+  ensureLibrary,
   searchRows,
 } from './memes.js'
 
@@ -205,7 +207,7 @@ export function apply(ctx, config) {
   // [patch-dsh-meme-auth] 本地 API 加固：缺 Origin 要自定义头；高风险 op 要令牌
   const AUTH_HEADER = 'x-dsh-meme'
   const TOKEN_HEADER = 'x-dsh-meme-token'
-  const HIGH_RISK_OPS = new Set(['setMemeRoot', 'setPacksDir', 'installRemoteArchive', 'importMemePack', 'deleteMemePack', 'deleteTag', 'setCompanionPrompt', 'browse', 'createMemePack'])
+  const HIGH_RISK_OPS = new Set(['setMemeRoot', 'setPacksDir', 'setRemoteDirUrl', 'installRemoteArchive', 'importMemePack', 'deleteMemePack', 'deleteTag', 'setCompanionPrompt', 'browse', 'createMemePack'])
   const tokenFile = join(dshHome(), '.dsh', 'dsh-expression.token')
   let apiToken = ''
   try { apiToken = readFileSync(tokenFile, 'utf8').trim() } catch (e) {}
@@ -233,6 +235,9 @@ export function apply(ctx, config) {
   const memeRoot = resolveActiveRoot(readSettings(), config?.memeRoot)
   let memes = null
   try {
+    // [patch-dsh-gengtu-noseed] 包里不再自带图片：目标目录还没有索引就地建一个空库，
+    // 否则新用户装上会因为「缺少表情包索引」整个插件不装（历史事故）。
+    ensureLibrary(memeRoot)
     memes = liveStore(new MemesStore(memeRoot))
   } catch (error) {
     console.error('[dsh-expression] meme store unavailable:', error && error.message)
@@ -510,21 +515,16 @@ export function apply(ctx, config) {
         pluginVersion,
         remoteSubs: remoteSubs(),
         remoteDirUrl: remoteDirUrls(),
+        remoteDirUser: s.remoteDirUrl || '',
         configured: !!(s.memeRoot || s.packId),
       }
     }
     const reloadMemeStore = (dir, packId) => {
       // 目录不存在则创建;没有 index.db 则初始化空图库(用户可传图/学图逐步填充)
-      mkdirSync(dir, { recursive: true })
-      const indexPath = join(dir, 'index.db')
-      if (!existsSync(indexPath)) {
-        const initDb = new DatabaseSync(indexPath)
-        initDb.exec('CREATE TABLE IF NOT EXISTS memes (path TEXT PRIMARY KEY, tag TEXT, file_name TEXT, caption TEXT, keywords TEXT, mtime REAL, captioned_at REAL)')
-        initDb.close()
-      }
-      const next = new MemesStore(dir)
+      const abs = ensureLibrary(dir)
+      const indexPath = join(abs, 'index.db')
+      const next = new MemesStore(abs)
       const nextDb = new DatabaseSync(indexPath)
-      const abs = resolve(dir)
       const hit = scanPacks(packsDirNow()).find((p) => resolve(p.path) === abs)
       writeSettings({
         memeRoot: abs,
@@ -1492,6 +1492,21 @@ export function apply(ctx, config) {
             mkdirSync(dir, { recursive: true })
             writeSettings({ packsDir: resolve(dir) })
             json(res, { ok: true, ...packPayload(), message: '已更新扫描目录' })
+          } else if (op === 'setRemoteDirUrl') {
+            // [patch-dsh-gengtu-remotedir-ui] 设置页「图库目录」输入框:一行一个地址(也吃逗号/分号)。
+            // 只影响「发现」页列什么;留空 = 不挂任何目录(默认就是这个,不指向任何上游市场)。
+            const raw = body.remoteDirUrl
+            const list = (Array.isArray(raw) ? raw : String(raw == null ? '' : raw).split(/[\s,;]+/))
+              .map((u) => String(u || '').trim()).filter(Boolean)
+            for (const u of list) {
+              if (!/^https?:\/\//i.test(u)) throw new Error('目录地址要以 http(s):// 开头: ' + u)
+            }
+            writeSettings({ remoteDirUrl: list.length === 0 ? '' : (list.length === 1 ? list[0] : list) })
+            remoteDirCache = null // 清缓存:下一次请求按新源重拉
+            json(res, {
+              ok: true, ...packPayload(),
+              message: list.length ? ('已保存 ' + list.length + ' 个目录源,去「发现」页点「重新拉取目录」') : '已清空目录源',
+            })
           } else if (op === 'setMemeRoot') {
             const dir = String(body.memeRoot || '').trim()
             if (!dir) throw new Error('目录不能为空')
