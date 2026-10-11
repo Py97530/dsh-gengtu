@@ -1538,11 +1538,96 @@ window.__ModuleLoader__.load({
         store.set(false)
       }
 
+      // [patch-dsh-meme-dominsert] 不靠插槽 prop 的「写草稿 / 发送」兜底路径。
+      // 背景:inputActions(setDraft/submit)是 ctx.uiSession 发给会话作用域插槽的标准 prop,
+      // 有的 DSH 版本不给 conversation.input.overlay 这个插槽(实测点下去 actions 为空、
+      // 两个 try/catch 把 undefined 静默吞掉 → 用户看到「点了什么都不出来」)。
+      // 这里直接对输入框做合成输入,与宿主是什么版本无关。
+      const editorEl = () => {
+        const trig = document.querySelector('.meme-trigger')
+        if (trig) {
+          let box = trig.parentElement
+          for (let up = 0; box && up < 8; up++) {
+            const ed = box.querySelector('textarea, [contenteditable="true"]')
+            if (ed && !isReadonlyEditor(ed)) return ed
+            box = box.parentElement
+          }
+        }
+        const alive = (el) => el && el.isConnected && el.offsetParent !== null && !isReadonlyEditor(el)
+        return Array.prototype.slice.call(document.querySelectorAll('textarea, [contenteditable="true"]')).filter(alive).pop() || null
+      }
+      // 消息内容区本身也常常是 contenteditable（可选中复制）——别把消息写进聊天记录里
+      const isReadonlyEditor = (el) => !!(el && el.closest && el.closest('[data-message-id], .dsh-message, article, [role="log"]'))
+      const insertNative = (el, text) => {
+        if (!el) return false
+        if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value').set
+          setter.call(el, text)
+          el.dispatchEvent(new Event('input', { bubbles: true }))
+          return true
+        }
+        el.focus()
+        const sel = window.getSelection()
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        sel.removeAllRanges()
+        sel.addRange(range)
+        let ok = false
+        try { ok = document.execCommand('insertText', false, text) } catch (e) { ok = false }
+        if (!ok) { try { ok = document.execCommand('paste') } catch (e2) { ok = false } }
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        return ok
+      }
+      const insertToEditor = (text) => {
+        try {
+          const el = editorEl()
+          if (!el) return false
+          const cur = el.tagName === 'TEXTAREA' || el.tagName === 'INPUT'
+            ? String(el.value || '')
+            : String(el.innerText || el.textContent || '')
+          const next = cur.trim() ? cur.replace(/\s+$/, '') + '\n' + text : text
+          return insertNative(el, next)
+        } catch (e) { return false }
+      }
+      const submitViaEditor = (el) => {
+        const sendRe = /send|submit|发送/
+        const nameOf = (b) => ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.getAttribute('data-testid') || '')).toLowerCase()
+        const findByAttr = (sel) => {
+          try { return Array.prototype.slice.call(document.querySelectorAll(sel)).pop() || null } catch (e) { return null }
+        }
+        try {
+          let root = el && el.closest ? el.closest('form') : null
+          let node = el
+          for (let up = 0; !root && node && up < 8; up++) { node = node.parentElement; root = node }
+          const scopes = [root, document.querySelector('form')].filter(Boolean)
+          for (const sc of scopes) {
+            const hit = Array.prototype.slice.call(sc.querySelectorAll('button')).filter((b) => sendRe.test(nameOf(b))).pop()
+            if (hit) { hit.click(); return true }
+          }
+          // 发送按钮是页面上唯一带这些名字的按钮，认准了再点（别乱点别的控件）
+          for (const sel of ['button[aria-label*="发送"]', 'button[title*="发送"]', 'button[aria-label*="Send" i]', 'button[data-testid*="send" i]']) {
+            const hit = findByAttr(sel)
+            if (hit) { hit.click(); return true }
+          }
+        } catch (e) {}
+        // 按钮认不出来就回车提交（宿主 composer 一般是 Enter 发送）
+        try {
+          if (!el) return false
+          for (const type of ['keydown', 'keypress', 'keyup']) {
+            el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }))
+          }
+          return true
+        } catch (e2) { return false }
+      }
       // 点击:发 [表情: 描述] 文本,前端按描述配图。
       const send = async (m) => {
         if (!m) return
         // 纯文本:[表情: 描述] —— 模型只看到文字;前端按描述配图。
-        const setText = (text) => { try { if (actions && actions.setDraft) actions.setDraft(text) } catch (e) {} }
+        const trySubmit = () => {
+          try { if (actions && actions.submit) { actions.submit(); return true } } catch (e) {}
+          return submitViaEditor(editorEl()) // [patch-dsh-meme-dominsert]
+        }
         const desc = (m.caption || m.keywords || m.tag || '表情包').slice(0, 80)
         // [patch-dsh-meme-pickmap] 记住"用户点的这张" —— 点谁发谁，不再依赖模糊匹配
         try { if (m.url) memePickMap.set(String(m.caption || desc).trim(), String(m.url)) } catch (e) {}
@@ -1550,9 +1635,13 @@ window.__ModuleLoader__.load({
         // （同一条 caption 挂多张图时，描述本身分辨不出来，码可以）。
         const code = memeCodeFromRow(m)
         const text = '[表情: ' + desc + ']' + (code ? ' ·' + code : '')
+        // 已经有草稿就接在后面;DOM 兜底那条路会自己把现有文字读出来,所以这里只传标记本身
         const cur = inputState && typeof inputState.draft === 'string' ? inputState.draft : ''
-        setText(cur.trim() ? cur + '\n' + text : text)
-        try { if (actions && actions.submit) actions.submit() } catch (e) {}
+        let wrote = false
+        try { if (actions && actions.setDraft) { actions.setDraft(cur.trim() ? cur + '\n' + text : text); wrote = true } } catch (e) {}
+        if (!wrote) wrote = insertToEditor(text) // [patch-dsh-meme-dominsert] 插槽没给 setDraft 就自己往输入框打
+        trySubmit() // [patch-dsh-meme-dominsert] 走输入框本身提交,不依赖插槽 prop
+        if (!wrote) console.warn('[dsh-gengtu] 没能把表情标记写进输入框：找不到输入框元素')
         store.set(false)
       }
 
