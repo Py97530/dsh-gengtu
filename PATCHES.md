@@ -282,3 +282,60 @@ render 里直接读 `memeApiStatus` / `memeIndex` / `memeCodeIndex`，而这三�
 `_diag-apply.mjs` apply() 真跑通、`_diag-auth.mjs` 17 条全绿、`node --check` 两个文件通过。
 真机验收仍要等重启 + 刷新：面板能开、点图能发、图能出、注释不露。
 
+## 2026-10-12 第八刀：装饰中途 `replaceChild` 抛错，一抛就把整趟扫描带崩（「只显示文字」）
+
+病根是 `client.js` 的 `decorateMemeText()` 里**两行的先后顺序**：
+
+```js
+maskMarksInTextNode(node)                    // ← 无条件先跑
+parent.dataset.memePendingAt = String(Date.now())
+...
+parent.replaceChild(frag, node)              // ← 后面每一条都炸在这
+```
+
+`maskMarksInTextNode` 的实现是拿一段文档片段**整个替换掉那个文本节点** —— node 的 identity 当场作废。
+于是**每一条能配到图的消息**（恰恰是最常见的那条路）走到下面那句就抛：
+
+```
+Failed to execute 'replaceChild' on 'Node': The node to be replaced is not a child of this node.
+```
+
+它抛在 for 循环里，旁边没有 per-node 的 try —— 整趟装饰当场断在这里：这条消息之后的节点全不处理，
+`dedupeMemeImages` / `hideMemeRawText` / `markStaleRawText` / 索引 TTL 重拉**全部跳过**。
+用户看到的就是「只显示文字」。2026-10-12 用户 m03064 从面板「自检」里念出来的那句
+「索引拉取失败: Failed to execute 'replaceChild'…」就是它 —— 异常从 `loadMemeIndex()` 的 `.catch`
+里漏出来，于是被写成「索引拉取失败」，而索引本身好好的。
+
+改法：
+
+- `maskMarksInTextNode(node)` + `memePendingAt` **挪进 `if (needsLookup && recheck)` 那一支** ——
+  只有「这一遍注定不出图、也不降级」时才摘原文；`loadMemeIndex()` 单独提到前面一行（它自带守卫）。
+- `parent.replaceChild(frag, node)` 前加兜底：
+  `if (node.parentNode !== parent) { memeDecorateStatus = '跳过一条消息：文本节点已被换走'; continue }` ——
+  真 DOM 下宁可这一条不装饰，也别拖垮全趟。
+- **装饰的异常不再伪装成索引异常**：`loadMemeIndex().then` 里的 `decorateMemeText(relook)` 单独 try/catch，
+  `runScan()` 的 catch 也记一笔，两者都写进 `memeDecorateStatus`（factory 顶层新声明，
+  `noteDecorateFailure` 统一写）。面板「自检」多一行：`装饰: 正常 | 已出图 N 张`
+  （`memeImgCount` 累计真正插进 DOM 的 `<img>` 数）—— 下回再犯，这一行直接念得出来。
+- `unmaskStalePending()` 放回原文的动作改掉：原来是 `ghost.style.display = ''`，可 `[data-meme-hidden]`
+  属性还挂在那个 span 上，而装饰侧 TreeWalker 一见它就 REJECT —— 等于这条消息**永久**裸着标记、
+  再也配不上图。现在 `holder.replaceChild(document.createTextNode(ghost.textContent || ''), ghost)`，
+  放回去的是**裸文本节点**。
+- 顺带（评审 AC-4）：`dedupeMemeImages()` 的去重键从 `caption` 改成 `caption + '|' + src` ——
+  原来同一条消息里两张描述一样、码不同的图（库里 10 组 / 58 张抖音组图共用一句 desc）会被当重复删掉第二张。
+
+新增回归测试 `test/decorate.test.mjs`（4 条）+ 假 DOM `test/stub/dom.mjs` —— 那个假 DOM 会**真断言子节点关系**，
+所以上面那句 `replaceChild` 一旦回退，测试当场变红：
+① 能配到图：图落进 DOM、原文标记不再可见、整趟不抛错；② 配不到图又赶上「码表刚更新」那一遍：先摘原文顶着，但不标装饰完成；
+③ 宽限期过了：原文放回可见树，而且是**裸文本节点**；④ 兜底：轮到自己时文本节点已被换走 → 跳过这一条，别把整趟扫描带崩。
+
+⚠️ 写这几条用例时踩的坑：`·码` 必须写在方括号**外面**（`[表情: 猫猫] ·c17928d`），
+这和 `memes.js:580` / `client.js:1691` 两处生成候选行的写法一致；写成 `[表情: 猫猫 ·c17928d]`
+正则的码捕获组（挂在 `]` 之后）就抓不到，用例会以「图没落进 DOM」的样子红 —— 那是测试写错了，不是产品坏了。
+
+验证：`decorate` 4/4 绿、其余六个测试文件全绿（basic 6 / match 4 / pincode 5 / dominsert 7 / scope-order 10 / notext 16）；
+新增活宿主只读探针 `tools/_diag-live.mjs`（打 19387 上**正在跑**的那个）：无头 GET 索引 403、带头 200、
+跨站 Origin 403、`delete` 无令牌 403、面板无头 403、图片路由 200；并核对「全库 978 行 / 977 行带码 /
+caption 撞车 10 组 58 张 / 磁盘 978 张 = 索引 978 行 / 服务端候选行 978 条全能被前端那条正则咬住」。
+真机验收仍要等重启 + 刷新：面板能开、点图能发、图能出、注释不露。
+

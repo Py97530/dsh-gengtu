@@ -133,6 +133,14 @@ window.__ModuleLoader__.load({
     let memeIndex = null
     let memeCodeIndex = new Map() // [patch-dsh-meme-pincode] code → url，码是稳定身份
     let memeApiStatus = ''
+    // [patch-dsh-meme-notext 第三刀 2026-10-12] 装饰自己改 DOM，出错了原来只在 console 里
+    // （runScan 的 catch）/ 或者被伪装成「索引拉取失败」（loadMemeIndex 的 catch）—— 用户看不见，
+    // 我隔着屏幕只能猜。这里统一留一笔，面板「自检」块读它。
+    let memeDecorateStatus = ''
+    let memeImgCount = 0
+    const noteDecorateFailure = (error) => {
+      memeDecorateStatus = '装饰失败: ' + String((error && error.message) || error).slice(0, 140)
+    }
 
     const TAG_ZH = {
       angry: '生气', happy: '开心', sad: '难过', shy: '害羞', confused: '困惑',
@@ -1799,6 +1807,10 @@ window.__ModuleLoader__.load({
             h('summary', null, '自检'),
             h('div', { className: 'mp-check-body' },
               h('div', null, memeApiStatus || '索引还没拉'),
+              // [patch-dsh-meme-notext 第三刀 2026-10-12] 装饰侧的状态也摆这儿。原来装饰一抛错，
+              // 要么被伪装成「索引拉取失败」、要么只落在 console（用户看不到），于是
+              // 「图全空 / 只显示文字」这类症状我只能在屏幕这边猜。现在点开就是一行实话。
+              h('div', null, (memeDecorateStatus ? '⚠️ ' + memeDecorateStatus : '装饰: 正常') + ' | 已出图 ' + String(memeImgCount) + ' 张'),
               h('button', {
                 type: 'button', className: 'mp-tag',
                 onClick: () => {
@@ -2006,6 +2018,8 @@ window.__ModuleLoader__.load({
       // 显示」那回，症状是「图全空」而控制台里的 403 他根本看不到 —— 现场只有一句话可问，
       // 装进面板的详情里他点一下就能念给我。
       memeApiStatus = '' // 声明在 factory 顶层（面板「自检」要读），这里每轮 apply 重置
+      memeDecorateStatus = '' // [patch-dsh-meme-notext 第三刀] 同上，装饰状态也归 factory 顶层
+      memeImgCount = 0
       // 索引拉取失败必须保持「可重试」状态。早先失败会往 memeIndex 写一个空 Map 兜底,
       // 而入口守卫是 `if (memeIndex || memeIndexLoading) return`——空 Map 也是真值,
       // 于是这个会话剩下的 [表情: x] 全部退化成描述文字,无报错、无提示,只能靠刷新恢复。
@@ -2098,7 +2112,9 @@ window.__ModuleLoader__.load({
             // 否则那条消息要等下一次别的触发才出图。
             const relook = memeIndexNeedsRecheck
             memeIndexNeedsRecheck = false
-            decorateMemeText(relook)
+            // [patch-dsh-meme-notext 第三刀 2026-10-12] 装饰单独接住：它的异常原来掉到下面那个
+            // .catch 里，被写成「索引拉取失败」——索引明明是好的（用户 m03064 那句就是这么来的）。
+            try { decorateMemeText(relook) } catch (error) { noteDecorateFailure(error) }
           })
           .catch((error) => {
             // 失败保持 null(下次扫描还能重试),退避到下次重试时刻;提示只打一次,别刷屏
@@ -2438,20 +2454,23 @@ const decorateMemeText = () => {
           while ((m = MEME_TEXT_RE.exec(text))) matches.push(m)
           if (matches.length === 0) continue
           const needsLookup = matches.some((hit) => !hit[2]) // [patch-dsh-meme-pincode] 有码就不用查表
-          // [patch-dsh-meme-notext 2026-10-12 第二刀] 用户报：「发表情包的时候，注释不会立马
-          // 消失，先冒出来一串给 AI 的注释」。这一支就是那个空窗：码/描述还没查表，图一个都没
-          // 插上，而下面所有隐藏逻辑的前提都是「这一行已经有 img[data-meme-img]」——
-          // 于是索引没到手之前（最长 15s）那串注释就明晃晃挂着。
-          // 先把它摘掉（只摘那一段字，正文不动），等图落下来就自然留着藏；宽限期到点图还没来，
-          // unmaskStalePending() 会把原文放回去，不会留一块空气泡。用户在 DSH 里发的时候，
-          // 宿主那边「已发送」的气泡走的也是这段文本节点，所以这一下闪现在自己发的消息上最明显。
-          maskMarksInTextNode(node)
-          parent.dataset.memePendingAt = String(Date.now())
-          loadMemeIndex()
-
+          loadMemeIndex() // 索引没到手 / 过期时补拉（函数入口有守卫，索引在就立刻返回）
+          // [patch-dsh-meme-notext 第三刀 2026-10-12] 「先把注释原文摘掉」这一下**只能**落在下面
+          // 那一支里（这一遍注定不出图、也不降级）。摘 = maskMarksInTextNode 拿一段文档片段
+          // **替换掉整个文本节点**，node 的 identity 当场作废；原来它在这里无条件先跑，于是
+          // **每一条能配到图的消息**都会在下面那句 parent.replaceChild(frag, node) 上抛
+          //   Failed to execute 'replaceChild' on 'Node': The node to be replaced is not a child of this node.
+          // 一抛就中断整趟装饰（这条消息之后的节点、dedupeMemeImages、hideMemeRawText、
+          // markStaleRawText、索引 TTL 重拉全跳过）——用户看到的就是「只显示文字」。
+          // 2026-10-12 用户 m03064 从面板「自检」里念出来的那句「索引拉取失败: Failed to execute
+          // 'replaceChild'…」就是它从 2103 那个 .catch 里漏出来的：病根在这一行，不在索引。
           if (needsLookup && recheck) {
             // 这一遍本来就是「码表刚更新」的重扫，还是查不到就直接放弃这一条（不装饰、
             // 不标 memeDecorated，下次别的事件驱动扫描还能再试），别再触发第三遍。
+            // 但这段空窗别让注释裸着（用户报过：发出去先冒出一串给 AI 的注释）：这一支才摘原文
+            // （只摘那一段字，正文不动），宽限期到点 unmaskStalePending() 会把原文放回去。
+            maskMarksInTextNode(node)
+            parent.dataset.memePendingAt = String(Date.now())
             continue
           }
           parent.dataset.memeDecorated = '1'
@@ -2504,7 +2523,15 @@ const decorateMemeText = () => {
             last = hit.index + hit[0].length
           }
           if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)))
+          // [patch-dsh-meme-notext 第三刀 2026-10-12] 兜底：这个文本节点已经被谁换走了。
+          // 真 DOM 的 replaceChild 会抛 NotFoundError 把整趟扫描炸断（全页表情都不出图），
+          // 宁可这一条不装饰，也别拖垮全趟。
+          if (node.parentNode !== parent) {
+            memeDecorateStatus = '跳过一条消息：文本节点已被换走'
+            continue
+          }
           parent.replaceChild(frag, node)
+          memeImgCount += imgs.length
           // [patch-dsh-meme-noflip] 图已经落到 DOM 上，撤掉「配图中」标记，交给
           // img[data-meme-hide-raw] 那条规则继续压着原文。
           delete parent.dataset.memePending
@@ -2621,6 +2648,9 @@ const decorateMemeText = () => {
           decorateNavIcon()
         } catch (error) {
           // 装饰失败不该打断宿主渲染:最多是这一轮表情不转图
+          // [patch-dsh-meme-notext 第三刀 2026-10-12] 但也不能只留 console —— 面板「自检」里
+          // 也记一笔，出事时他能一句话念给我（上回就是这么查出来的）。
+          noteDecorateFailure(error)
           console.warn('[dsh-expression] 表情装饰失败:', error && error.message ? error.message : error)
         } finally {
           scanning = false
@@ -2751,7 +2781,15 @@ const decorateMemeText = () => {
         if (el.querySelector('img[data-meme-img]')) continue // 图已经来了，藏得有理
         for (const ghost of el.querySelectorAll('[data-meme-hidden]')) {
           // 只放回**我们摘的那种**（装的是标记原文）；ghostFor() 造的占位 ghost 不动
-          if (/^\[(?:表情|m):/.test(ghost.textContent || '')) ghost.style.display = '' // 内联 display:none 撤掉
+          if (!/^\[(?:表情|m):/.test(ghost.textContent || '')) continue
+          // [patch-dsh-meme-notext 第三刀 2026-10-12] 放回 = 把 ghost 拆掉、原地还一个**普通文本
+          // 节点**，不是只把 display 撤掉。只撤 display 的话，这段原文还裹在 [data-meme-hidden]
+          // 里，而装饰侧 TreeWalker 一见 [data-meme-hidden] 就 REJECT（2415 那条判据）——这条消息
+          // 从此再也配不上图，永久裸着一行标记，只有刷新才可能自愈。拆开就回到「它就是普通文本」，
+          // 下一遍扫描照常装饰/降级。用户 2026-10-12 报的「只显示文字」里就含这一坑。
+          const holder = ghost.parentNode
+          if (!holder) continue
+          holder.replaceChild(document.createTextNode(ghost.textContent || ''), ghost)
         }
         // 这一行还露着标记 → 别让下一遍冻结它，重新走一次装饰（真配不到图会走降级，只显示描述）
         if (/\[(?:表情|m):/.test(textWithoutGhosts(el))) {
