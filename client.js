@@ -125,6 +125,15 @@ window.__ModuleLoader__.load({
       return found[found.length - 1].slice(1)
     }
 
+    // [patch-dsh-meme-selfcheck] 面板「自检」块要读这三个：索引、码表、状态文案。
+    // ⚠️ 必须在 factory 顶层 —— 它们原来写在 apply() 里，MemeBoard 的 render 一读
+    // memeApiStatus 就是 ReferenceError，面板整个打不开（用户报「表情包界面直接打不开」）。
+    // 教训同 memePickMap：render 表达式是渲染当帧就跑，不是「点下去才读」。
+    // apply() 开头只做重置赋值，声明归这里。
+    let memeIndex = null
+    let memeCodeIndex = new Map() // [patch-dsh-meme-pincode] code → url，码是稳定身份
+    let memeApiStatus = ''
+
     const TAG_ZH = {
       angry: '生气', happy: '开心', sad: '难过', shy: '害羞', confused: '困惑',
       daily: '日常',
@@ -1979,8 +1988,8 @@ window.__ModuleLoader__.load({
       // 上次的位置往后找——于是「这一条运气不好」的消息被静默跳过、永远不出图,还得等下一轮
       // 扫描碰巧把游标绕回 0(历史 bug:表现就是「表情有时显示不出来」)。
       const MEME_TEXT_TEST = /\[(?:表情|m):\s*([^\]]+)\](?:\s*·(c[0-9a-f]{5,6}))?(?:\((https?:\/\/[^\s)]+)\))?/ // [patch-dsh-meme-dualcode] 必须与 RE 同步
-      let memeIndex = null
-      let memeCodeIndex = new Map() // [patch-dsh-meme-pincode] code → url，码是稳定身份
+      memeIndex = null // 声明在 factory 顶层（面板「自检」要读），这里每轮 apply 重置
+      memeCodeIndex = new Map() // [patch-dsh-meme-pincode] code → url，码是稳定身份
       let memeIndexNeedsRecheck = false // 有条目因为索引里没码而没配出来 → 拉完再扫一轮
       let memeSearch = [] // 分词兜底用的 haystack:[{hay:[...], url}]
       let memeIndexLoading = false
@@ -1996,7 +2005,7 @@ window.__ModuleLoader__.load({
       // [patch-dsh-meme-notext 2026-10-12] 索引拉失败时面板上要看得见一句话。用户报「表情包无法
       // 显示」那回，症状是「图全空」而控制台里的 403 他根本看不到 —— 现场只有一句话可问，
       // 装进面板的详情里他点一下就能念给我。
-      let memeApiStatus = ''
+      memeApiStatus = '' // 声明在 factory 顶层（面板「自检」要读），这里每轮 apply 重置
       // 索引拉取失败必须保持「可重试」状态。早先失败会往 memeIndex 写一个空 Map 兜底,
       // 而入口守卫是 `if (memeIndex || memeIndexLoading) return`——空 Map 也是真值,
       // 于是这个会话剩下的 [表情: x] 全部退化成描述文字,无报错、无提示,只能靠刷新恢复。

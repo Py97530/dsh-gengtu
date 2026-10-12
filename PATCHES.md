@@ -258,3 +258,27 @@ scope-order 10 / notext 16，`scope-order` 的 `KNOWN_CLOSURE_FORWARD` 认领了
 `memeIndex` / `memeCodeIndex` / `memeApiStatus`）；活宿主实测 7 条：裸 GET 索引 403、同源戳 200（264216B）、
 cross-site 403、`x-dsh-meme` 200、跨站 Origin 403、面板裸取 403、面板同源戳 200。
 
+## 2026-10-12 第七刀：面板「自检」跨作用域引用，把整个面板炸开（「表情包界面直接打不开」）
+
+第六刀顺带加的那个「自检」块自己埋了颗雷：`MemeBoard`（factory 顶层，`client.js:1464` 定义）
+render 里直接读 `memeApiStatus` / `memeIndex` / `memeCodeIndex`，而这三个当时声明在 `apply()`
+内部（`client.js:1982` 一带）。render 表达式是**渲染当帧就跑**，不是「点下去才读」——
+组件一挂载就是 `ReferenceError: memeApiStatus is not defined`，面板整个打不开。
+用户原话：「越修越乱现在表情包界面直接打不开」。
+
+病根跟当年 `memeCodeFromRow` 那次一模一样（factory 组件引用 apply 作用域的 let），
+区别是那次死在 onClick 里（点图没反应），这次死在 render 里（面板根本出不来）。
+
+改法：
+
+- 三个变量提到 factory 顶层（`memePickMap` 旁边，`client.js:133-135`），`apply()` 开头只做
+  重置赋值，声明归 factory —— 与 `memePickMap` / `MEME_CODE_RE` / `memeCodeFromRow` 同一姿势。
+- `test/scope-order.test.mjs`：把 `KNOWN_CLOSURE_FORWARD` 里认领的这三个名字**删掉**
+  （上一刀那次认领本身就是错的：那不是「闭包前向引用」，是跨作用域 undefined 变量，
+  豁免名单不是这么用的）；同时把三个名字加进「点击路径依赖的符号都在 factory 顶层」和
+  「函数定义必须早于它引用的 factory 级声明」两道用例 —— 钉死，防再犯。
+
+验证：六个测试文件全绿（basic 6 / match 4 / pincode 5 / dominsert 7 / scope-order 10 / notext 16）、
+`_diag-apply.mjs` apply() 真跑通、`_diag-auth.mjs` 17 条全绿、`node --check` 两个文件通过。
+真机验收仍要等重启 + 刷新：面板能开、点图能发、图能出、注释不露。
+
