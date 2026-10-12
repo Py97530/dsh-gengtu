@@ -20,14 +20,23 @@ import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const src = readFileSync(join(HERE, '..', 'client.js'), 'utf8')
 
-// ⚠️ 这两个函数现在都在**工厂顶层**（4 空格缩进），不是 apply() 里面（6 空格）——
+// ⚠️ 这几个函数现在都在**工厂顶层**（4 空格缩进），不是 apply() 里面（6 空格）——
 // 兜底那层要在 apply 外面调它。抠源码的正则跟着缩进走，挪了地方就得一起改。
+// [patch-dsh-meme-notext 2026-10-12] 第二层（markStaleRawText / hideStaleRawText）原先零覆盖，
+// 而它正好是「正文被整块吞掉」的那个病灶（评审 AC-1/AC-2/AC-3）。现在两层一起抠出来测。
 const fnSrc = (() => {
-  const m = src.match(/const hideMemeRawText = \(\) => \{[\s\S]*?\n {4}\}/)
-  assert.ok(m, '没能在 client.js 里找到 hideMemeRawText（源码结构变了？测试要跟着改）')
-  const tw = src.match(/const textWithoutGhosts = \(el\) => \{[\s\S]*?\n {4}\}/)
-  assert.ok(tw, '没能在 client.js 里找到 textWithoutGhosts（它该在工厂顶层）')
-  return tw[0] + '\n' + m[0]
+  const grab = (re, name) => {
+    const m = src.match(re)
+    assert.ok(m, '没能在 client.js 里找到 ' + name + '（源码结构变了？测试要跟着改）')
+    return m[0]
+  }
+  const consts = grab(/const MEME_EXCLUDE_SEL = '[^']*'/, 'MEME_EXCLUDE_SEL')
+  const tw = grab(/const textWithoutGhosts = \(el\) => \{[\s\S]*?\n {4}\}/, 'textWithoutGhosts')
+  const mask = grab(/const maskMarksInTextNode = \(node\) => \{[\s\S]*?\n {4}\}/, 'maskMarksInTextNode')
+  const hide = grab(/const hideMemeRawText = \(\) => \{[\s\S]*?\n {4}\}/, 'hideMemeRawText')
+  const mark = grab(/const markStaleRawText = \(\) => \{[\s\S]*?\n {4}\}/, 'markStaleRawText')
+  const stale = grab(/const hideStaleRawText = \(\) => \{[\s\S]*?\n {4}\}/, 'hideStaleRawText')
+  return [consts, tw, mask, hide, mark, stale].join('\n')
 })()
 
 // ---- 够用的假 DOM：元素 / 文本节点 / TreeWalker / 选择器 / 文档片段 --------
@@ -90,6 +99,9 @@ const makeDoc = () => {
       }
       return hit(doc.body)
     },
+    // [patch-dsh-meme-notext 2026-10-12] 第二层要在 document 上找 [data-meme-rawleft] 的行，
+    // 假 DOM 里少这个方法 → 5 条兜底用例全抛 TypeError（假红，不是代码红）。
+    querySelectorAll(sel) { return doc.body.querySelectorAll(sel) },
   }
   doc.body = makeEl('body')
   doc.body.ownerDocument = doc
@@ -103,7 +115,6 @@ function makeEl(tag) {
     childNodes: [],
     parentNode: null,
     attrs: {},
-    dataset: {},
     style: {},
     textContent: '',
     className: '',
@@ -153,14 +164,39 @@ function makeEl(tag) {
       return null
     },
   }
+  // [patch-dsh-meme-notext 2026-10-12] 真 DOM 里 `el.dataset.memeRawleft='1'` 会**同时**写
+  // data-meme-rawleft 属性 —— markStaleRawText 靠 dataset 盖章、hideStaleRawText 用属性选择器
+  // 找行，假 DOM 里这两个要是各存各的，第二层就永远在空跑（测试假红，而且掩盖真 bug）。
+  // 这里做成双向：写 dataset 落成属性，读 dataset 从属性来，kebab ↔ camel 互转。
+  el.dataset = new Proxy({}, {
+    get(_t, k) {
+      if (typeof k !== 'string') return undefined
+      const key = 'data-' + k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())
+      return key in el.attrs ? el.attrs[key] : undefined
+    },
+    set(_t, k, v) {
+      if (typeof k !== 'string') return false
+      el.attrs['data-' + k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())] = String(v)
+      return true
+    },
+    deleteProperty(_t, k) {
+      if (typeof k === 'string') delete el.attrs['data-' + k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())]
+      return true
+    },
+    has(_t, k) {
+      if (typeof k !== 'string') return false
+      return ('data-' + k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())) in el.attrs
+    },
+  })
   return el
 }
 
 // ---- 组装：把抠出来的函数放进一个能看见 document / NodeFilter 的作用域 -----
-const build = (doc) => {
-  const fn = new Function('document', 'NodeFilter', fnSrc + '\n return hideMemeRawText')
+const buildAll = (doc) => {
+  const fn = new Function('document', 'NodeFilter', fnSrc + '\n return { hideMemeRawText, markStaleRawText, hideStaleRawText }')
   return fn(doc, { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 })
 }
+const build = (doc) => buildAll(doc).hideMemeRawText
 
 // 把一棵假 DOM 里**还看得见**的文本拼出来（跳过 data-meme-hidden 子树）
 const visibleText = (node) => {
@@ -249,4 +285,89 @@ test('重复调用是幂等的（每轮扫描都会跑一次）', () => {
   run(); const after2 = visibleText(doc.body)
   assert.equal(after1, after2, '跑第二遍又改了可见文本')
   assert.ok(!after2.includes('[表情:'), '第一遍就没摘干净：' + after2)
+})
+
+// ---- 第二层（兜底层）：宿主把文本节点重写之后，靠这一层 -------------------------------------------------
+// 这一组是评审 AC-1/AC-2/AC-3 的回归：原来它按**元素**判（这一层含标记字样就 display:none），
+// 同一条 <p> 里的正文会跟着消失，而且没盖任何标记 → 装饰侧的恢复逻辑找不到它，只能刷新才回来。
+const staleRow = (doc, opts) => {
+  const flow = makeEl('div'); flow.attrs['data-chat-flow-key'] = 'k2'
+  const bubble = makeEl('div')
+  flow.appendChild(bubble)
+  if (opts.beforeImg) { const p = makeEl('p'); p.appendChild(doc.createTextNode(opts.beforeImg)); bubble.appendChild(p) }
+  const img = makeEl('img')
+  img.attrs['data-meme-img'] = 'desc'; img.attrs['data-meme-hide-raw'] = '1'; img.attrs['src'] = 'http://x/dsh-memes/a.jpg'
+  bubble.appendChild(img)
+  const textP = makeEl(opts.textTag || 'p')
+  textP.appendChild(doc.createTextNode(opts.text))
+  bubble.appendChild(textP)
+  if (opts.mixed) {
+    // 正文 + 标记**同处一个元素的同一个文本节点**（AC-2 的形状：元素级隐藏会连正文一起吞）
+    textP.replaceChild(doc.createTextNode(opts.mixed), textP.childNodes[0])
+  }
+  doc.body.appendChild(flow)
+  return { flow, bubble, textP, img }
+}
+
+test('兜底层：正文和标记在同一个元素里，只摘标记、正文必须留着（AC-2）', () => {
+  const doc = makeDoc()
+  const { flow, textP } = staleRow(doc, { mixed: '今晚加班，先这样吧。[表情: 橘猫垂眼] ·c44807b 我先睡了', beforeImg: '' })
+  const api = buildAll(doc)
+  api.markStaleRawText()
+  api.hideStaleRawText()
+  const seen = visibleText(doc.body)
+  assert.ok(!seen.includes('[表情:'), '标记没摘掉：' + seen)
+  assert.ok(seen.includes('今晚加班，先这样吧。'), '正文被吞了：' + seen)
+  assert.ok(seen.includes('我先睡了'), '标记后面的正文被吞了：' + seen)
+  assert.equal(textP.style.display, undefined, '不该再对元素下手（display 不该被设）')
+  assert.equal(flow.getAttribute('data-meme-rawleft'), '1', '这一行该被认成「还露着标记」（dataset 与属性要同步）')
+})
+
+test('兜底层：代码块里的格式示例不许碰（AC-3）', () => {
+  const doc = makeDoc()
+  const { flow } = staleRow(doc, { text: '例：' + MARK, textTag: 'code' })
+  const api = buildAll(doc)
+  api.markStaleRawText()
+  api.hideStaleRawText()
+  assert.ok(visibleText(flow).includes('[表情:'), '代码块里的示例被摘了')
+})
+
+test('兜底层：没配到图的行不碰（降级态要看得见描述）', () => {
+  const doc = makeDoc()
+  const flow = makeEl('div'); flow.attrs['data-chat-flow-key'] = 'k3'
+  const p = makeEl('p'); p.appendChild(doc.createTextNode(MARK))
+  flow.appendChild(p); doc.body.appendChild(flow)
+  const api = buildAll(doc)
+  api.markStaleRawText()
+  api.hideStaleRawText()
+  assert.ok(visibleText(doc.body).includes('[表情:'), '没图也摘了，会留空气泡')
+  assert.equal(flow.getAttribute('data-meme-rawleft'), null, '没图的行不该被盖章')
+})
+
+test('兜底层：宿主写回正文时不能把元素锁死（AC-1：刷新才回来的那种）', () => {
+  const doc = makeDoc()
+  const { flow, textP } = staleRow(doc, { text: MARK })
+  const api = buildAll(doc)
+  api.markStaleRawText()
+  api.hideStaleRawText()
+  assert.equal(flow.getAttribute('data-meme-rawleft'), '1', '前提：第一遍该盖章')
+  // 宿主把纯文本子节点重写成新的文本节点（流式追加就是这么干的）
+  textP.replaceChild(doc.createTextNode('写回来了：这是新正文'), textP.childNodes[0])
+  api.markStaleRawText()
+  api.hideStaleRawText()
+  assert.ok(visibleText(flow).includes('写回来了：这是新正文'), '新正文被旧状态挡住了')
+})
+
+test('兜底层：摘过的 ghost 不重复摘（幂等）', () => {
+  const doc = makeDoc()
+  staleRow(doc, { text: '看 ' + MARK })
+  const api = buildAll(doc)
+  api.markStaleRawText(); api.hideStaleRawText()
+  const once = visibleText(doc.body)
+  const ghosts1 = doc.body.querySelectorAll('[data-meme-hidden]').length
+  api.markStaleRawText(); api.hideStaleRawText()
+  const twice = visibleText(doc.body)
+  const ghosts2 = doc.body.querySelectorAll('[data-meme-hidden]').length
+  assert.equal(once, twice, '第二遍又改了可见文本')
+  assert.equal(ghosts1, ghosts2, 'ghost 越裹越多')
 })

@@ -82,17 +82,25 @@ function notice(msg, kind) {
   el.textContent = msg
 }
 
+// [patch-dsh-meme-auth 2026-10-12] 服务端现在要求来源头 + 高危 op 令牌；面板是 DSH 同源页面，
+// 令牌由 tapIndex 注入成 window.__DSH_MEME_TOKEN__。以前这两个 fetch 什么都不带，靠的是
+// update/delete 恰好不在高危名单里——那条路已经堵上了。
+function memeHeaders() {
+  const h = { 'x-dsh-meme': '1' }
+  if (window.__DSH_MEME_TOKEN__) h['x-dsh-meme-token'] = window.__DSH_MEME_TOKEN__
+  return h
+}
 async function apiGet(params) {
   const qs = new URLSearchParams()
   if (params.tag) qs.set('tag', params.tag)
   if (params.q) qs.set('q', params.q)
-  const res = await fetch('/dsh-memes-api?' + qs.toString())
+  const res = await fetch('/dsh-memes-api?' + qs.toString(), { headers: memeHeaders() })
   return res.json()
 }
 async function apiPost(payload) {
   const res = await fetch('/dsh-memes-api', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...memeHeaders() },
     body: JSON.stringify(payload),
   })
   return res.json()

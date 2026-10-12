@@ -37,11 +37,12 @@
 | client.js | `[patch-dsh-meme-noflip]` | 纯 CSS 把「已配到图」的 `[表情: 描述]` 原文吃掉（`img[data-meme-hide-raw]` 兄弟选择器），配图中先压 4s 兜底动画，失败自动放回原文 | 用户报：点了表情包发出去，气泡里先闪一整行给模型看的注释文字再变图；JS 隐藏会被宿主流式渲染重写翻回来 |
 | client.js + memes.js | `[patch-dsh-meme-pincode]` | 每行 keywords 尾部挂稳定码 `·c1a2b3`（`'c'+sha1(path).slice(0,6)`，由 `_plugin_work/add-meme-codes.mjs` 写入）；`memes.js` 的候选行与 `hits` 都带码；`client.js` 的标记正则多认一个 `·码` 后缀，解析改成 **标记里的 URL > 码表 > 描述匹配**，码查不到时**直接放弃、绝不退回描述匹配**（拉完索引再扫一轮） | 用户报：点的是 A、发出来是 B。病根是一个抖音帖的整组图共用一句 desc 当 caption（库里 14 组 / 92 张撞车），前端索引 `caption→url` 后写覆盖先写、描述匹配又只取「第一个像的」 |
 | memes.js | `[patch-dsh-meme-seed]` | 保留「首启种图」机制但**包里不带图**（曾短暂带过自己挑的 57 张底图，后撤掉）：`seedLibrary()` 读包内 `seed/manifest.json`，没有就返回 0；有则 `INSERT OR IGNORE` 逐张导入、码按新路径(`memes/<tag>/seed-NNN.jpg`)重算、种完写 `.seeded` 记号（用户自己删光图后重启**不会**被硬塞回来） | 装完插件图库空空如也，新用户没法用；但随包分发别人的图有版权风险，所以机制留着、图不带 —— 想自带就自己放 `seed/` |
-| client.js | `[patch-dsh-meme-seedpick]` | 图库面板加「挑选」模式（默认关；点图只勾选、右上角序号，导出发本地打包服务 `http://127.0.0.1:8796/submit`，另有「填进对话」兜底） | 要能在聊天窗口里直接挑图攒一份自带底图，不用另开窗口；做成默认关，普通用户点图就该直接发出去 |
+| client.js | `[patch-dsh-meme-seedpick]` | 图库面板加「挑选」模式（默认关；点图只勾选、右上角序号；「填进对话」把清单贴进草稿——本地打包服务 `127.0.0.1:8796` 已撤，按钮只提示走「填进对话」） | 要能在聊天窗口里直接挑图攒一份自带底图，不用另开窗口；做成默认关，普通用户点图就该直接发出去 |
 | client.js + index.js | `[patch-dsh-meme-window]` | 图库面板一次只铺 72 格、滚到底自动续（IntersectionObserver 哨兵 `mp-more`）；删图改成只摘掉本地那一格（失败才回退全量 `load()`）；宿主 `op:'delete'` 的存在性校验从全表 `list().some()` 改成按主键单查 | 用户报：删完表情包电脑卡几秒。本机实测整库 979 张铺满 = 141MB / 5.6 秒随机读，`node:sqlite` 又跑在后端主线程上 |
 | client.js | `[patch-dsh-meme-dominsert]` | 点图后的兜底不依赖插槽 prop：`actions.setDraft` 缺席时直接把 `[表情: 描述] ·码` 打进输入框（contenteditable 走 `execCommand('insertText')`、textarea/input 走原型原生 value setter + `input` 事件）；提交按 插槽 `submit` → 输入框那一带的发送按钮（按 `aria-label`/`title`/`data-testid` 认）→ 回车 依次试；认输入框时排除消息内容区 | 用户报：点了表情包**输入框里什么都不出来**。DSH 有的版本不给 `conversation.input.overlay` 这个插槽发 `inputActions`，`actions.setDraft`/`actions.submit` 都是 undefined，而调用点在 try/catch 里被静默吞掉 |
 | client.js | `[patch-dsh-meme-defensive]` | `memeCodeFromRow` / `MEME_CODE_RE` / `memePickMap` 三样提到 factory 顶层（`apply()` 里那份删掉）；取码包 `try`（失败只丢码、不许拖垮发送）；草稿现状改成「只有**真读到**宿主状态才认」（`haveState`），拿不到就一律走 DOM 那条路，免得拿 null 快照去 `setDraft` 反把草稿清空 | 用户 m00585 念出的现场行是 `点图抛错: memeCodeFromRow is not defined` —— 点图处理器第一句就 `ReferenceError`，抛在写草稿/提交**之前**，所以表现是「点了完全没反应」；前几轮全猜错了方向（插槽、鉴权、旧代码） |
 | client.js | `[patch-dsh-meme-diag]` | `send()` 拆成外壳 + `sendInner()`，外壳 `catch` 把异常写到图库面板顶上的取证行（`.mp-diag`，CSS 在样式表里），并记 `localStorage.dshGengtuClickN` 点击数；取证行内容 = `写:how / 数据:from / 句柄:sbi / 提:sub / 图:有` | 「点了没反应」时前端一点线索都不给，只能靠猜；有这一行用户念一句就能定位（这次就是这么破的案）。正常工作时这行不显示 |
+| client.js + index.js + memes.js + panel.html | `[patch-dsh-gengtu-hardening2]` | 2026-10-12 评审整改一整批：兜底层从「元素级隐藏」改成**文本级摘除**（`maskMarksInTextNode`，正文一个字都不吞）、排除面与装饰侧对齐、去重键带上图 URL、CSS `~*` 收窄成三条；后端 `HIGH_RISK_OPS` 补 `update/delete/upload/recognize`、新增 `assertLocalRequest()`（Host 必须回环 + Origin 同源 + 无 Origin 要头）、导出/图库页共用这道门、`update` 的 caption/keywords 补 `.slice(0,200)`、`readBody` 32MB→128MB；`MOODS.sad` 收编 `speechless`；面板请求带头带令牌。详见下面「2026-10-12 评审整改」 | 评审团查出：① 我那层兜底是**元素级** `display:none`，同一元素里的正文会被一起吞掉、宿主再写回来也翻不回来；② `update`/`delete`（改一行 caption、删一张图）**恰好不在** HIGH_RISK_OPS 里 —— 等于"删整包要令牌、删单张不要"；③ `/dsh-memes-api` 的 GET 走不到鉴权、`/memes-panel` 与 `/dsh-memes-export` 零鉴权、`sameOrigin` 是自己跟自己比（DNS rebinding 通杀）；④ `speechless` 142 张（全库 14.5%）不在任何情绪桶里，按情绪抽样永远抽不到 |
 | client.js | `[patch-dsh-meme-notext]` | 注释原文的隐藏改成**按文本节点摘**，不再押 DOM 形状：这条消息里已经有 `img[data-meme-img]` 时，把同一行里还看得见的 `[表情: …] ·码` 文本节点用 `<span data-meme-hidden>` 裹住（ghost 里那份原文保留）；CSS 另补两条父级/气泡级判据（`:has()`），「配图中」兜底从 4s 收到 0.25s | 用户报：「图不立马出来，先出现一串给 ai 的注释」，图出来了注释还杵在气泡里、**能选中能复制**。前两版都押在形状上：`~` 要求注释元素是图片**兄弟**、`:has`+`[data-meme-bare]` 要求气泡里没有别的可见文本 —— 宿主一换裹法就全漏。这版只认「这行配到图了」+「这段文本是标记」，层级无所谓 |
 
 ## 高风险操作令牌
@@ -108,3 +109,74 @@
 3. `test/basic.test.mjs` 里那段断言（原来断言「首启至少 1 张自带图」）改回
    **空库断言**：索引建得出来、0 行、目录里没有残留图、`tags` 为空、`search()` 返回数组、
    越界路径仍然抛错 —— 保证「包里不带图」这条约定以后不会被误改回去。
+
+## 2026-10-12 评审整改（三个人三份报告，全在这天落实）
+
+三份报告原文在 `_plugin_work\评审-架构线-2026-10-12.md`、`_plugin_work\安全线评审-dsh-gengtu.md`、
+`_plugin_work\sec-probe-result.txt`；合订与我的复核在 `_plugin_work\评审汇总-2026-10-12.md`。
+这天的改动全部收在一个标记 `[patch-dsh-gengtu-hardening2]` 下。
+
+### 一、兜底层：从「藏元素」改成「摘掉那一段字」
+
+原先 `hideStaleRawText()` 的判据是「这个元素里**含**标记文字」→ `el.style.display = 'none'`。
+后果比它要修的问题还糟：**同一元素里的正文一起消失**（用户实际会看到「今晚加班，先这样吧。」整句没），
+而且没盖任何标记，宿主再往那个元素里写新正文时那段字**永远回不来，只能刷新页面**。
+
+现在的做法：`maskMarksInTextNode(node)` 只把文本节点里的标记段（`[表情: …]` 或 `[m:…]`，可选带 `·码`）
+裹进 `<span data-meme-hidden="1" style="display:none">`，**正文原样留在同一个文本节点里**。
+两层（首轮装饰 `hideMemeRawText` 与兜底 `hideStaleRawText`）都走这一个函数。
+
+顺手对齐的四处口径：
+
+1. **排除面**：新增 `MEME_EXCLUDE_SEL = 'input,textarea,[contenteditable="true"],[data-variant="think"],[data-variant="others"],pre,code'`。
+   装饰侧本来就排这些，兜底层以前只排输入框 —— 于是**本会话里正在调试的标记格式出现在代码块里时会被吃掉**。
+2. **孤儿判据**：宿主覆写会把 `img` 连 `ghost` 一起抹掉；原来的判据是「元素里没有 `img[data-meme-img]` 也没有
+   `[data-meme-hidden]` 就摘掉 `data-meme-decorated` 让它重新装饰」。文本级摘除之后**正文里的标记也会留下 ghost**，
+   那些元素永远不再被当成孤儿、图回不来。改成先算 `onlyGhosts`（子节点里除了 `[data-meme-hidden]` 没别的），
+   再「没有 `img` 且只剩 ghosts」才重新装饰。
+3. **去重键**：`dedupeMemeImages` 原来按 caption 去重，而 caption **不含稳定码** → 同一条消息里两张
+   caption 相同、码不同的图会被当重复丢掉（库里 14 组抖音组图共用一句 desc，现实触发源）。
+   现在键是 `caption + '|' + img.getAttribute('src')`：码查得到时 src 是那张图自己的地址，只有都查不到
+   （降级到描述兜底）时才去重。
+4. **CSS**：`dsh-meme-notext-css` 原来是 `img[data-meme-img] ~ *`，会连图片**后面所有**兄弟元素一起吞掉，
+   而且 `!important` 撤不回来。收窄成 `~span` / `~div` / `~p` 三条（各自排除已摘的与图片自身）。
+
+### 二、鉴权：这道门原来漏了全部改库路径
+
+`PATCHES.md` 自己在下面写着「真正的护栏是高风险 op 的令牌」—— 而 `update` / `delete` / `upload` /
+`recognize` **四个最常用的写操作都不在** `HIGH_RISK_OPS` 里。粒度还正好反着：删**整包**要令牌、删**单张**不要；
+改提示词要令牌、改**任意一行 caption** 不要。实测（`sec-probe-result.txt`）带 `x-dsh-meme: 1` 不带令牌时
+这四个 op 全走到业务逻辑里（400「未知路径」/「缺少图片数据」），而 `browse`/`deleteTag` 那些 403 挡得住。
+
+同一天查实的另外三条：
+
+- `/dsh-memes-api` 的 **GET 分支在鉴权之前就 return**（`index.js:1218`）→ 全部 caption/keywords/绝对路径裸奔，
+  369 KB 无头 curl 就能拿走；加 `Origin: http://evil.example` 也 200。
+- `/memes-panel`（8993 B）与 `/dsh-memes-export`（**114 MB**）零鉴权；`panel.html` 的 `apiGet`/`apiPost`
+  不带头不带令牌，而它调的 `update`/`delete` 恰好免令牌 → **一个 URL 就是完整读写删管理台**。
+- `sameOrigin = o.host === String(req.headers.host || '')` 是**自己跟自己比**：攻击者把 Host 和 Origin
+  都设成自己的域名就全通（DNS rebinding）；决定性对照 `Host: 127.0.0.1:1` + `Origin: http://127.0.0.1:1` → 200。
+
+改法：新增 `LOOPBACK_HOSTS` / `hostIsLoopback()` / `assertLocalRequest()`（Host 必须回环；有 Origin 必须与
+Host 同源；没 Origin 要 `x-dsh-meme: 1` 或 `sec-fetch-site: same-origin`），**放在 `/dsh-memes-api` handler
+最前面**（GET 一并守住，原来埋在 POST 分支里那段删掉），导出与图库页各加一行、失败码 500→403；
+`update` 的 caption/keywords 补 `.slice(0, 200)`（对照 upload 早有这个上限，写库路径反而没有，
+上限只剩 `readBody`）；`panel.html` 新增 `memeHeaders()` 统一带头带令牌。
+`test/_diag-auth.mjs` 把这三个函数从源码里抠出来打 12 条用例（同源 / 带头 / `sec-fetch-site` / `localhost` /
+`[::1]` 放行；裸 curl / 跨站 Origin / rebinding / Host 缺省 / 别的机器 / `127.0.0.1.evil.example` 拦下）。
+
+### 三、顺带
+
+- `readBody` 上限 32 MB → **128 MB**：导出是 zipStore 不压缩、库已 110 MB，导入又走 base64（×1.33），
+  「导出→导入」这条**唯一的整库回滚路径**原来必然超限。
+- `MOODS.sad` 收编 `speechless`，`MOOD_WORDS.sad` 补「说不出话」：全库 142 张（14.5%）原来不在任何情绪桶里，
+  按情绪抽样永远抽不到（这次评审就是抽「悲伤」抽不到才发现的）。
+- `seedExport` 出站 `127.0.0.1:8796`（实测没人监听的死代码，谁先占谁收数据）删掉，只留文案提示。
+
+### 四、还没验的部分（别当成已验）
+
+- 这套改动**全部只落在工作区**，宿主进程里跑的还是旧代码 —— 重启 + 刷新之后才算现场验收：
+  注释不再露 / 正文不再被吞 / 图库页与导出照常（**门收紧了，最怕把自己的页面打成 403 空白**）。
+- 六份单测（basic / match / pincode / dominsert / scope-order / notext=11 条）+ `_diag-apply.mjs` 三个插槽 +
+  `_diag-auth.mjs` 12 条全绿，但这都是**假 DOM / 抠源码**级别的验证，没有一条是浏览器里的端到端。
+- 验收线剩下的 AC-8（导出导入往返）、AC-4（去重键）只有推理与单测，没在真机上走过一遍。

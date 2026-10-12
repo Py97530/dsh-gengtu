@@ -285,7 +285,9 @@ export function liveStore(store) {
 const MOODS = {
   happy: ['happy', 'like', 'meow', 'givemoney', 'color'],
   angry: ['angry', 'fool', 'baka'],
-  sad: ['sad', 'sigh'],
+  // [patch-dsh-meme-speechless 2026-10-12] speechless 原先不在任何桶里 —— 库里 978 张有 142 张
+  // 挂在它名下（14.5%），按情绪抽样永远抽不到那些图。
+  sad: ['sad', 'sigh', 'speechless'],
   shy: ['shy'],
   confused: ['confused', 'surprised', 'see'],
   daily: ['daily', 'sleep', 'morning', 'work', 'cpu', 'reply'],
@@ -294,7 +296,7 @@ const MOODS = {
 const MOOD_WORDS = {
   happy: '开心 高兴 兴奋 喜欢 卖萌 可爱 比心 哈哈 欢迎 得意 好耶 满意',
   angry: '生气 愤怒 暴躁 笨蛋 傻瓜 嫌弃 逮',
-  sad: '难过 哭 委屈 叹气 无语 求饶 怂 晕',
+  sad: '难过 哭 委屈 叹气 无语 求饶 怂 晕 说不出话',
   shy: '害羞 腼腆 脸红 花痴',
   confused: '困惑 疑惑 惊讶 问号 懵 惊吓 震惊',
   daily: '困 睡觉 早上好 打招呼 你好 上班 下班 摸鱼 工作 熬夜 吃饭 干饭 饿 日常',

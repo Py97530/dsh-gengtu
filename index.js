@@ -207,7 +207,10 @@ export function apply(ctx, config) {
   // [patch-dsh-meme-auth] 本地 API 加固：缺 Origin 要自定义头；高风险 op 要令牌
   const AUTH_HEADER = 'x-dsh-meme'
   const TOKEN_HEADER = 'x-dsh-meme-token'
-  const HIGH_RISK_OPS = new Set(['setMemeRoot', 'setPacksDir', 'setRemoteDirUrl', 'installRemoteArchive', 'importMemePack', 'deleteMemePack', 'deleteTag', 'setCompanionPrompt', 'browse', 'createMemePack'])
+  // [patch-dsh-meme-auth 2026-10-12] update/delete/upload/recognize 以前不在名单里，带一个
+  // x-dsh-meme: 1 就能改任意一行 caption、删任意一张图（安全评审 VULN-2 实测：请求全都进了
+  // 业务逻辑，只差一个合法路径/图片体）。删整包要令牌、删单张不要，这种粒度是反的。
+  const HIGH_RISK_OPS = new Set(['setMemeRoot', 'setPacksDir', 'setRemoteDirUrl', 'installRemoteArchive', 'importMemePack', 'deleteMemePack', 'deleteTag', 'setCompanionPrompt', 'browse', 'createMemePack', 'update', 'delete', 'upload', 'recognize'])
   const tokenFile = join(dshHome(), '.dsh', 'dsh-expression.token')
   let apiToken = ''
   try { apiToken = readFileSync(tokenFile, 'utf8').trim() } catch (e) {}
@@ -1192,7 +1195,10 @@ export function apply(ctx, config) {
       }
     } catch { }
 
-    const readBody = (req, maxBytes = 32 * 1024 * 1024) => new Promise((resolve, reject) => {
+    // [patch-dsh-meme-auth 2026-10-12] 上限从 32MB 提到 128MB：导出走 zipStore 不压缩，实测图库
+    // 已经 110MB，而导入要 base64（×1.33）+ JSON 转义 ⇒ 32MB 的坑意味着「导出→导入」这条唯一的
+    // 整库回滚路径必然超限、必失败（评审 AC-8）。上限只对本机来源生效，前面那道门已经堵上了。
+    const readBody = (req, maxBytes = 128 * 1024 * 1024) => new Promise((resolve, reject) => {
       const chunks = []
       let total = 0
       req.on('data', (c) => {
@@ -1211,10 +1217,43 @@ export function apply(ctx, config) {
       res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
       res.end(body)
     }
+    // [patch-dsh-meme-auth 2026-10-12] 三个「别让外面碰」的路由共用的一道门。
+    // 之前只有 POST 分支查来源，而且 GET 分支在它之前就 return 了 → /dsh-memes-api 的 GET、
+    // /memes-panel、/dsh-memes-export 全是零鉴权（安全评审实测：GET 26 万字节、面板 8993 字节、
+    // 导出 109MB 整库 zip，谁 curl 一下都能拿走）。
+    // ① Host 必须是回环地址 —— 原来是拿 Origin 跟请求自己的 Host 比（自己跟自己比），
+    //    DNS rebinding 下两者都是攻击者域名，等于没查。
+    // ② Origin 存在就必须跟请求的 Host 同源（浏览器跨站发起的写操作挡在这里）。
+    // ③ 没有 Origin 的本机脚本（curl / node）要带 x-dsh-meme: 1 或 sec-fetch-site: same-origin。
+    const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+    const hostIsLoopback = (hostHeader) => {
+      const h = String(hostHeader || '').trim().toLowerCase()
+      if (!h) return false
+      const name = h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0]
+      return LOOPBACK_HOSTS.has(name)
+    }
+    const assertLocalRequest = (req) => {
+      if (!hostIsLoopback(req.headers.host)) throw new Error('请求 Host 不是本机回环地址，拒绝')
+      const origin = req.headers.origin
+      if (origin) {
+        let sameOrigin = false
+        try { sameOrigin = new URL(origin).host === String(req.headers.host || '') } catch { sameOrigin = false }
+        if (!sameOrigin) throw new Error('跨站请求被拒绝')
+        return
+      }
+      const authHdr = req.headers[AUTH_HEADER]
+      if (String(authHdr || '') !== '1' && String(req.headers['sec-fetch-site'] || '') !== 'same-origin') {
+        throw new Error('缺少来源校验头(本地脚本请带 x-dsh-meme: 1)')
+      }
+    }
     ctx.effect(() => webServer.register({
       kind: 'exact',
       path: '/dsh-memes-api',
       async handler(req, res) {
+        try { assertLocalRequest(req) } catch (error) {
+          json(res, { ok: false, error: error instanceof Error ? error.message : String(error) }, 403)
+          return
+        }
         if (req.method === 'GET') {
           const u = new URL(req.url || '/', 'http://localhost')
           if (u.searchParams.has('remoteDir')) {
@@ -1275,26 +1314,7 @@ export function apply(ctx, config) {
           })
           return
         }
-        // 状态变更请求:校验 Origin 与 Host 同源,防浏览器跨站触发(CSRF)。
-        // 缺失 Origin 的本地脚本/curl 请求放行(兼容),不同源一律 403。
-        const origin = req.headers.origin
-        const authHdr = req.headers[AUTH_HEADER] // [patch-dsh-meme-auth]
-        if (origin) {
-          let sameOrigin = false
-          try {
-            const o = new URL(origin)
-            sameOrigin = o.host === String(req.headers.host || '')
-          } catch { sameOrigin = false }
-          if (!sameOrigin) {
-            json(res, { ok: false, error: '跨站请求被拒绝' }, 403)
-            return
-          }
-        } else if (String(authHdr || '') !== '1' && String(req.headers['sec-fetch-site'] || '') !== 'same-origin') { // [patch-dsh-meme-auth]
-          // 浏览器同源 GET 不发 Origin(只有跨站/非 GET 才发),所以这里再认一条 sec-fetch-site:
-          // 否则页面侧任何一个漏带头的 GET(图库列表、搜索、发现页、表情索引)都会被 403 打成空白。
-          json(res, { ok: false, error: '缺少来源校验头(本地脚本请带 x-dsh-meme: 1)' }, 403)
-          return
-        }
+        // 来源校验已经在函数开头统一做过(assertLocalRequest)——GET 跟 POST 走同一道门。
         let body
         try {
           body = JSON.parse(await readBody(req))
@@ -1368,8 +1388,10 @@ export function apply(ctx, config) {
             if (!row) throw new Error('未知路径: ' + path)
             const tag = body.tag != null ? String(body.tag).trim().toLowerCase() : row.tag
             if (!validTagRe.test(tag)) throw new Error('tag 只能是小写字母/数字/-/_')
-            const caption = body.caption != null ? String(body.caption).trim() : row.caption
-            const keywords = body.keywords != null ? String(body.keywords).trim() : row.keywords
+            // [patch-dsh-meme-auth 2026-10-12] 原来没有长度上限(upload 有 slice(0,200))，上限只剩
+            // readBody 的 32MB —— caption 会被原样发给模型，等于给了一条任意长文本的注入通道。
+            const caption = body.caption != null ? String(body.caption).trim().slice(0, 200) : row.caption
+            const keywords = body.keywords != null ? String(body.keywords).trim().slice(0, 200) : row.keywords
             adminDb.prepare('UPDATE memes SET tag = ?, caption = ?, keywords = ? WHERE path = ?').run(tag, caption, keywords, path)
             json(res, { ok: true })
           } else if (op === 'delete') {
@@ -1604,6 +1626,7 @@ export function apply(ctx, config) {
           return
         }
         try {
+          assertLocalRequest(req) // [patch-dsh-meme-auth 2026-10-12] 导出整库以前零鉴权(安全评审 VULN-3)
           // packId 指定要导出哪个图库(图库页每张卡片都能导出),不传就导出当前图库
           const wanted = new URL(req.url || '/', 'http://localhost').searchParams.get('packId')
           const target = wanted ? listAllPacks().find((p) => p.id === wanted) : null
@@ -1639,7 +1662,7 @@ export function apply(ctx, config) {
           })
           res.end(zip)
         } catch (error) {
-          res.writeHead(500, { 'Content-Type': 'text/plain' })
+          res.writeHead(403, { 'Content-Type': 'text/plain' })
           res.end('导出失败: ' + (error instanceof Error ? error.message : String(error)))
         }
       },
@@ -1651,11 +1674,12 @@ export function apply(ctx, config) {
       path: '/memes-panel',
       handler(req, res) {
         try {
+          assertLocalRequest(req) // [patch-dsh-meme-auth 2026-10-12] 面板以前零鉴权(安全评审 VULN-3)
           const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'panel.html'))
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
           res.end(html)
         } catch (error) {
-          res.writeHead(500, { 'Content-Type': 'text/plain' })
+          res.writeHead(403, { 'Content-Type': 'text/plain' })
           res.end('panel.html 缺失: ' + (error instanceof Error ? error.message : String(error)))
         }
       },

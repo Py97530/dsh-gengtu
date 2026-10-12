@@ -1538,21 +1538,12 @@ window.__ModuleLoader__.load({
       }
       // [patch-dsh-meme-seedpick] 导出:POST 给本地打包服务落盘(开发时手动跑 dev/pick-server.mjs)。
       // 不做成插件自带路由 —— 随包公开分发时不该多一个「往你磁盘写清单」的接口。
+      // [patch-dsh-meme-auth 2026-10-12] 原来这里有个 POST http://127.0.0.1:8796/submit（往本机
+      // 一个“打包服务”送选中清单）。实测那个端口从来没人监听，等于把用户选中的图路径往外送、
+      // 谁先占这个端口谁收；而且随包分发不该带一个出站请求。改成直接指路草稿那条兜底路径。
       const seedExport = async () => {
         if (picked.length === 0) { setSeedNote('还没勾'); return }
-        setSeedNote('导出中…')
-        const paths = picked.map((p) => p.path)
-        const posts = [
-          ['http://127.0.0.1:8796/submit', { paths }, { 'Content-Type': 'application/json' }],
-        ]
-        for (const [url, body, headers] of posts) {
-          try {
-            const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
-            const res = await r.json().catch(() => null)
-            if (res && res.ok) { setSeedNote('好，清单发出去了，' + String(res.count) + ' 张'); return }
-          } catch (e) { /* 这条不通就试下一条 */ }
-        }
-        setSeedNote('没连上本地打包服务，点「填进对话」贴给我也行')
+        setSeedNote('没有本地打包服务了，点「填进对话」贴给我')
       }
       // [patch-dsh-meme-seedpick] 兜底:直接把清单塞进对话草稿,他手点发送我照样能收到
       const seedToDraft = () => {
@@ -2111,8 +2102,14 @@ window.__ModuleLoader__.load({
           let seen = seenByRow.get(row)
           if (!seen) seenByRow.set(row, seen = new Set())
           const caption = img.getAttribute('data-meme-img') || ''
-          if (seen.has(caption)) { img.remove(); continue } // 留先出现的那张(已被提到行首的)
-          seen.add(caption)
+          // [patch-dsh-meme-notext 2026-10-12] 去重键以前只有 caption（= foldCaption 后的描述），
+          // 不含那条尾巴上的稳定码 → 同一条消息里两张码不同、描述一样的图，第二张会被当重复删掉
+          // （评审 AC-4；库里 14 组 / 92 张抖音组图共用一句 desc，是现实触发源）。把 src 并进键里：
+          // 码能查到时 src 就是那张图自己的 URL；查不到时 src 是描述查出来的兜底图 —— 那种情况才
+          // 确实该去重，行为跟以前一致。
+          const key = caption + '|' + (img.getAttribute('src') || '')
+          if (seen.has(key)) { img.remove(); continue } // 留先出现的那张(已被提到行首的)
+          seen.add(key)
         }
       }
       /* [patch-dsh-meme-zoom] 点击聊天里的表情图放大查看（滚轮缩放/双击复位/Esc 或点背景关闭） */
@@ -2326,7 +2323,17 @@ const decorateMemeText = () => {
         // (流式追加/编辑消息)时元素还带着 display:none,内容会永久不可见——按「现在有没有
         // 可见文本」翻回来,只动打过 data-meme-empty 标记的,宿主自己隐藏的元素不碰。
         for (const el of document.querySelectorAll('[data-meme-decorated],[data-meme-empty]')) {
-          if (!el.querySelector('img[data-meme-img],[data-meme-hidden]')) delete el.dataset.memeDecorated
+          // [patch-dsh-meme-notext 2026-10-12] 孤儿判据以前是「既没图、又没 ghost」。摘标记改成
+          // 文本级之后，一条消息正文里的标记也会留下 [data-meme-hidden] 的 ghost → 那些被宿主
+          // 覆写掉 img、只剩 ghost 的元素再也摘不掉标记，本轮扫描照样跳过它，图回不来（刷新才行）。
+          // 改成「没图 + 子节点全是 ghost（除了 ghost 没别的东西）」才算孤儿。
+          let onlyGhosts = true
+          for (const child of el.childNodes) {
+            if (child.nodeType === 1 && child.dataset && child.dataset.memeHidden) continue
+            onlyGhosts = false
+            break
+          }
+          if (!el.querySelector('img[data-meme-img]') && onlyGhosts) delete el.dataset.memeDecorated
           // [patch-dsh-meme-index] 降级装饰（只有 ghost、没图）是「当时索引里没有这张」的产物。
           // 索引一旦重拉过就给它一次重试机会：ghost 里装着原文标记，textContent 拼起来与
           // 替换前逐字一致，还原成裸文本让本轮扫描重新处理即可。只在「元素子节点除了 ghost
@@ -2631,6 +2638,41 @@ const decorateMemeText = () => {
       return out
     }
 
+    // [patch-dsh-meme-notext 2026-10-12] 摘标记时要绕开的容器：输入框、代码块，以及轨迹 / Think /
+    // 工具卡。装饰侧（2358 那一带）本来就排这些，兜底层当初只排了输入框 —— 结果「正文里演示一下
+    // 这个格式」的代码块会被当成注释收掉（评审 AC-3）。
+    const MEME_EXCLUDE_SEL = 'input,textarea,[contenteditable="true"],[data-variant="think"],[data-variant="others"],pre,code'
+
+    // [patch-dsh-meme-notext 2026-10-12] 把**一个文本节点**里的标记段包成 ghost，正文原样留着。
+    // 返回是否真的动过手。两层共用：第一层（配图成功那条路）和第二层（宿主把文本节点重写之后）
+    // 要摘的形状完全一样，复制两份迟早走样 —— 评审就是在这里抓到「元素级 vs 文本级」不一致的。
+    // 边界只吃到 `]`（可选带上 ·码）：尾巴上的 (URL) 留着不摘，它本来也不显眼，而多吃一个字符
+    // 就多一次把正文吃进去的机会。
+    const maskMarksInTextNode = (node) => {
+      const parent = node.parentNode
+      if (!parent) return false
+      const text = node.nodeValue || ''
+      const re = /\[(?:表情|m):[^\]]*\](?:\s*·c[0-9a-f]{5,6})?/g
+      let at = 0
+      let hit
+      let wrapped = false
+      const frag = document.createDocumentFragment()
+      while ((hit = re.exec(text))) {
+        if (hit.index > at) frag.appendChild(document.createTextNode(text.slice(at, hit.index)))
+        const ghost = document.createElement('span')
+        ghost.setAttribute('data-meme-hidden', '1')
+        ghost.style.display = 'none'
+        ghost.textContent = hit[0]
+        frag.appendChild(ghost)
+        wrapped = true
+        at = hit.index + hit[0].length
+      }
+      if (!wrapped) return false
+      if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)))
+      parent.replaceChild(frag, node)
+      return true
+    }
+
     const hideMemeRawText = () => {
       if (!document.querySelector('img[data-meme-img],img[data-meme-hide-raw]')) return
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\[(?:表情|m):/.test(n.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) })
@@ -2641,38 +2683,24 @@ const decorateMemeText = () => {
         const parent = node.parentElement
         if (!parent) continue
         if (parent.closest('[data-meme-hidden]')) continue // 我们自己那份 ghost，留着
-        if (parent.closest('input,textarea,[contenteditable="true"]')) continue
+        if (parent.closest(MEME_EXCLUDE_SEL)) continue
         const row = parent.closest('[data-chat-flow],[data-chat-flow-key],[data-time-hover-root]')
         if (!row || !row.querySelector('img[data-meme-img]')) continue // 这条消息真把图配上了才摘
-        const text = node.nodeValue || ''
-        const re = /\[(?:表情|m):[^\]]*\](?:\s*·c[0-9a-f]{5,6})?(?:\((https?:\/\/[^\s)]+)\))?/g
-        let at = 0
-        let hit
-        const frag = document.createDocumentFragment()
-        let wrapped = false
-        while ((hit = re.exec(text))) {
-          if (hit.index > at) frag.appendChild(document.createTextNode(text.slice(at, hit.index)))
-          const ghost = document.createElement('span')
-          ghost.setAttribute('data-meme-hidden', '1')
-          ghost.style.display = 'none'
-          ghost.textContent = hit[0]
-          frag.appendChild(ghost)
-          wrapped = true
-          at = hit.index + hit[0].length
-        }
-        if (!wrapped) continue
-        if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)))
-        node.parentNode.replaceChild(frag, node)
+        maskMarksInTextNode(node)
       }
-    }
+    }
 
     // [patch-dsh-meme-notext 2026-10-12] 兜底那层：JS 摘过之后，宿主的流式渲染还会把纯文本
     // 子节点**重写成新的文本节点**，而父元素还挂着 data-meme-decorated → decorateMemeText 的
     // TreeWalker 直接跳过、JS 再也不会碰它，气泡里就永久留着一行 [表情: …]（用户 2026-10-12
     // 复制给我的就是这个）。这里做两件事：① 在「还露着标记、而且这一行真配到图了」的消息行上
-    // 盖 data-meme-rawleft；② 把那一行里**可见文本仍含标记字样**的元素收掉。用 JS 逐元素判而
-    // 不是纯 CSS——CSS 没有「这个元素里有这段字」的选择器，`:has(>img)` 也匹配不到「img 在
-    // 兄弟层、注释在祖父层」的形状。没配到图的行一律不碰（降级态要看得见描述，不能给空气泡）。
+    // 盖 data-meme-rawleft；② 把那一行里还露着的标记**按文本段**摘掉。
+    // ⚠️ 2026-10-12 评审改：② 原来是「这一层含标记字样就 el.style.display='none'」（元素级），
+    // 同一条 <p> 里的正文会跟着消失，而且没盖任何标记 → 装饰侧的恢复逻辑找不到它，只能刷新才
+    // 回来。现在改成跟 ① 层一样的**文本级**处理：只把标记那一段包进 [data-meme-hidden] 的
+    // span，正文原样留着、宿主写回也不受影响。用 JS 逐文本判而不是纯 CSS——CSS 没有「这个元素
+    // 里有这段字」的选择器，`:has(>img)` 也匹配不到「img 在兄弟层、注释在祖父层」的形状。
+    // 没配到图的行一律不碰（降级态要看得见描述，不能给空气泡）。
     const markStaleRawText = () => {
       for (const el of document.querySelectorAll('[data-meme-rawleft]')) delete el.dataset.memeRawleft
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\[(?:表情|m):/.test(n.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) })
@@ -2681,7 +2709,7 @@ const decorateMemeText = () => {
         const parent = cur.parentElement
         if (!parent) continue
         if (parent.closest('[data-meme-hidden]')) continue // 自己那份 ghost 不算
-        if (parent.closest('input,textarea,[contenteditable="true"]')) continue
+        if (parent.closest(MEME_EXCLUDE_SEL)) continue
         const row = parent.closest('[data-chat-flow],[data-chat-flow-key],[data-time-hover-root]')
         if (!row || !row.querySelector('img[data-meme-img]')) continue
         row.dataset.memeRawleft = '1'
@@ -2689,10 +2717,16 @@ const decorateMemeText = () => {
     }
     const hideStaleRawText = () => {
       for (const row of document.querySelectorAll('[data-meme-rawleft]')) {
-        for (const el of row.querySelectorAll('*')) {
-          if (el.tagName === 'IMG' || el.dataset.memeHidden) continue
-          if (el.querySelector('img[data-meme-img]')) continue // 有图的层不能吃
-          if (/\[(?:表情|m):/.test(textWithoutGhosts(el))) el.style.display = 'none'
+        const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\[(?:表情|m):/.test(n.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) })
+        const found = []
+        let cur
+        while ((cur = walker.nextNode())) found.push(cur)
+        for (const node of found) {
+          const parent = node.parentElement
+          if (!parent) continue
+          if (parent.closest('[data-meme-hidden]')) continue // 已经摘过的 ghost
+          if (parent.closest(MEME_EXCLUDE_SEL)) continue // 代码块 / Think 里的字面量不动
+          if (maskMarksInTextNode(node)) { /* 摘掉一段 */ }
         }
       }
     }
@@ -2700,8 +2734,12 @@ const decorateMemeText = () => {
       if (document.getElementById('dsh-meme-notext-css')) return
       const st = document.createElement('style')
       st.id = 'dsh-meme-notext-css'
-      // 老兄弟判据留着：注释元素真跟图片同层时，CSS 比 JS 快一步（不等下一轮扫描）。
-      st.textContent = 'img[data-meme-img]:not([data-meme-hidden])~*:not([data-meme-hidden]):not(img):not([data-meme-img]){display:none!important}'
+      // [patch-dsh-meme-notext 2026-10-12] 老兄弟判据：注释元素真跟图片同层、而且它就是纯文字
+      // 容器时，CSS 比 JS 快一步（不等下一轮扫描）。
+      // ⚠️ 原来这条是 `~*`（图片之后的**所有**兄弟元素），评审 AC-5 指出它会连 <br>/<strong>/<a>
+      // 甚至正文段落一起 `display:none!important`，而且 !important 一旦命中，JS 想恢复都恢复不了。
+      // 现在只认纯文字容器（span/div/p），`<br>` 和行内元素不碰——真漏了还有 JS 那层按文本段摘。
+      st.textContent = 'img[data-meme-img]:not([data-meme-hidden])~span:not([data-meme-hidden]):not([data-meme-img]),img[data-meme-img]:not([data-meme-hidden])~div:not([data-meme-hidden]):not([data-meme-img]),img[data-meme-img]:not([data-meme-hidden])~p:not([data-meme-hidden]):not([data-meme-img]){display:none!important}'
       document.head.appendChild(st)
     })()
     exports.apply = apply
