@@ -1232,6 +1232,25 @@ export function apply(ctx, config) {
       const name = h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0]
       return LOOPBACK_HOSTS.has(name)
     }
+    // [patch-dsh-meme-auth 2026-10-12 修正] 只读 GET 的放行口径：门收得太紧会把**我们自己的界面**
+    // 挡在外面 —— 2026-10-12 用户报「表情包无法显示」就是这一条：客户端的
+    // `fetch('/dsh-memes-api?packId=all', { headers: memeApiHeaders() })` 是同源 GET，
+    // 浏览器**不发 Origin**（fetch 规范只对跨源请求带 Origin），于是掉进最后那条分支；
+    // 而 memeApiHeaders() 没拿到 `window.__DSH_MEME_TOKEN__` 时只有 Content-Type，
+    // x-dsh-meme: 1 也没带 → 403 → 码表空 → 一行标记都配不上图 → 聊天里全是没有 src 的图。
+    // 修法：GET 额外认浏览器自己盖的同源戳 `Sec-Fetch-Site: same-origin`。
+    // 为什么只认它、不认 Referer（2026-10-12 实测后砍掉的那版）：Node 的 fetch **根本不发 Referer**
+    // （lib 开 no-referrer），浏览器在 Referrer-Policy: no-referrer 下也不发 —— 这条判据在真机上
+    // 是死的；而且 Referer 可以缺省、Sec-Fetch-* 是 forbidden header，跨站页面伪造不了。
+    // 下面两条显式拦 same-site / cross-site 是正向判据（不是 `else return true`），
+    // 将来宿主把 web 挪到子域上也不会悄悄放宽。GET 只读、改不了任何东西，放行它不削弱写路径：
+    // 写操作不带 Origin 仍然被挡在这里，高风险 op 还要令牌。
+    const sameOriginInitiator = (req) => {
+      const site = String(req.headers['sec-fetch-site'] || '').toLowerCase()
+      if (site === 'same-origin') return true
+      if (site === 'same-site' || site === 'cross-site') return false
+      return false
+    }
     const assertLocalRequest = (req) => {
       if (!hostIsLoopback(req.headers.host)) throw new Error('请求 Host 不是本机回环地址，拒绝')
       const origin = req.headers.origin
@@ -1241,10 +1260,12 @@ export function apply(ctx, config) {
         if (!sameOrigin) throw new Error('跨站请求被拒绝')
         return
       }
+      const readOnly = String(req.method || 'GET').toUpperCase() === 'GET'
       const authHdr = req.headers[AUTH_HEADER]
-      if (String(authHdr || '') !== '1' && String(req.headers['sec-fetch-site'] || '') !== 'same-origin') {
-        throw new Error('缺少来源校验头(本地脚本请带 x-dsh-meme: 1)')
-      }
+      if (String(authHdr || '') === '1') return
+      if (readOnly && sameOriginInitiator(req)) return
+      if (String(req.headers['sec-fetch-site'] || '') === 'same-origin') return
+      throw new Error('缺少来源校验头(本地脚本请带 x-dsh-meme: 1)')
     }
     ctx.effect(() => webServer.register({
       kind: 'exact',

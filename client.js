@@ -1784,6 +1784,24 @@ window.__ModuleLoader__.load({
             onClick: () => { setSeedMode(!seedMode); setSeedNote('') },
           }, seedMode ? '挑选中 (' + picked.length + ')' : '挑选'),
           diag ? h('span', { className: 'mp-diag' }, diag) : null,
+          // [patch-dsh-meme-notext 2026-10-12] 面板上留一个「自检」：点开就是索引状态和一次真发图。
+          // 上回图全空（403）时我隔着屏幕只能猜，这个能让他一句话念给我。
+          h('details', { className: 'mp-check' },
+            h('summary', null, '自检'),
+            h('div', { className: 'mp-check-body' },
+              h('div', null, memeApiStatus || '索引还没拉'),
+              h('button', {
+                type: 'button', className: 'mp-tag',
+                onClick: () => {
+                  const probe = (memeIndex && memeIndex.size) || 0
+                  const codes = memeCodeIndex ? memeCodeIndex.size : 0
+                  const first = memeIndex ? memeIndex.values().next().value : null
+                  const url = Array.isArray(first) ? first[0] : first
+                  setDiag('索引 ' + probe + ' 键 | 码表 ' + codes + ' | 样本 ' + (url ? String(url).slice(-28) : '（无）'))
+                },
+              }, '查索引'),
+            ),
+          ),
           h('span', { className: 'mp-count' }, String(windowedMemes.length) + '/' + String(shownMemes.length) + (shownMemes.length < memes.length ? ' 共' + String(memes.length) : '')),
         ),
         seedMode ? h('div', { className: 'mp-seedbar' },
@@ -1975,6 +1993,10 @@ window.__ModuleLoader__.load({
       let memeIndexRetryAfter = 0 // 失败后的冷却截止时刻(ms):冷却期内不再发请求
       let memeIndexAttempts = 0
       let memeIndexWarned = false
+      // [patch-dsh-meme-notext 2026-10-12] 索引拉失败时面板上要看得见一句话。用户报「表情包无法
+      // 显示」那回，症状是「图全空」而控制台里的 403 他根本看不到 —— 现场只有一句话可问，
+      // 装进面板的详情里他点一下就能念给我。
+      let memeApiStatus = ''
       // 索引拉取失败必须保持「可重试」状态。早先失败会往 memeIndex 写一个空 Map 兜底,
       // 而入口守卫是 `if (memeIndex || memeIndexLoading) return`——空 Map 也是真值,
       // 于是这个会话剩下的 [表情: x] 全部退化成描述文字,无报错、无提示,只能靠刷新恢复。
@@ -2060,6 +2082,7 @@ window.__ModuleLoader__.load({
             memeCodeIndex = codes
             memeSearch = buildMemeSearch(rows, (row) => absMemeUrl(row.url, row.path))
             memeIndexAt = Date.now() // [patch-dsh-meme-index]
+            memeApiStatus = '索引就绪: ' + rows.length + ' 张 / 码表 ' + codes.size + ' 个'
             memeIndexAttempts = 0
             memeIndexRetryAfter = 0
             // 刚才因为「码还没进索引」而跳过的标记，索引到手后立刻补扫一遍，
@@ -2072,6 +2095,7 @@ window.__ModuleLoader__.load({
             // 失败保持 null(下次扫描还能重试),退避到下次重试时刻;提示只打一次,别刷屏
             const backoff = Math.min(MEME_INDEX_RETRY_MAX, MEME_INDEX_RETRY_BASE * Math.pow(2, Math.max(0, memeIndexAttempts - 1)))
             memeIndexRetryAfter = Date.now() + backoff
+            memeApiStatus = '索引拉取失败: ' + String((error && error.message) || error).slice(0, 120)
             if (!memeIndexWarned) {
               memeIndexWarned = true
               console.warn('[dsh-expression] 表情索引加载失败,' + Math.round(backoff / 1000) + 's 后自动重试:', error && error.message ? error.message : error)
@@ -2441,6 +2465,10 @@ const decorateMemeText = () => {
             if (src) {
               const img = document.createElement('img')
               img.src = src
+              // [patch-dsh-meme-notext 2026-10-12] 长会话里几百张图一起解码会把主线程堵住 → 丢帧、
+              // 图迟迟不出来。原生懒加载 + 异步解码：屏幕外的图不抢带宽和解码时间。
+              img.loading = 'lazy'
+              img.decoding = 'async'
               img.alt = hit[0].slice(0, 60)
               // [patch-dsh-meme-notitle] 不留 title：鼠标停在图上也别浮出描述文字
               img.dataset.memeImg = foldCaption(label) // 去重用的描述标记 // [patch-dsh-meme-dualcode]

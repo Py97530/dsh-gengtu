@@ -235,6 +235,10 @@ const KNOWN_CLOSURE_FORWARD = [
   // unmaskStalePending 由 hideMemeRawText 那一层和 runScan 调，声明在两者之后。
   // 两个调用点都在**扫描驱动**的执行路径上，不是 apply() 里的同步起点，所以安全。
   'maskMarksInTextNode', 'unmaskStalePending',
+  // [patch-dsh-meme-auth 2026-10-12] 面板「自检」那三个：都声明在 apply() 里（memeIndex /
+  // memeCodeIndex 由 loadMemeIndex 填、memeApiStatus 记索引状态），引用点是 details 里
+  // 「查索引」按钮的 onClick —— 组件渲染期只建闭包，用户点下去才读，届时早初始化完了。
+  'memeIndex', 'memeCodeIndex', 'memeApiStatus',
 ]
 
 test('闭包前向引用有名单：新增一条就得在这里认领（豁免不能静默变多）', () => {

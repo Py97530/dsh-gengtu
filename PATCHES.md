@@ -224,3 +224,37 @@ Host 同源；没 Origin 要 `x-dsh-meme: 1` 或 `sec-fetch-site: same-origin`�
 诊断脚本 `tools/_diag-flash.mjs`：把 `unmaskStalePending` 那一族真源码抠出来、往关键步骤插打印，
 用最小假 DOM 走一遍「摘 → 超期 → 放回」。
 
+## 2026-10-12 第六刀：门把自家界面挡在外面（「表情包无法显示」）
+
+用户重启后报：**表情包无法显示**（图全空，连图库面板里的图也不出来）。
+
+现场取证（只读探针打宿主）：
+
+- `GET /dsh-memes-api?packId=all` 无头 → **403**，`{"ok":false,"error":"缺少来源校验头(本地脚本请带 x-dsh-meme: 1)"}`；
+  `GET /memes-panel` 无头 → 403。带 `x-dsh-meme: 1` 拿到的库是完全正常的：978 行、字段
+  `path,tag,file_name,caption,keywords,url` 齐全；图片路由 `/dsh-memes/<packId>/<rel>` 六种头组合
+  **全是 200** —— 库和图片服务都没坏，坏的是「客户端拿不到那张码表」。
+- 根因：客户端的索引请求 `fetch('/dsh-memes-api?packId=all', { headers: memeApiHeaders() })`（`client.js:2042`）
+  是**同源 GET，浏览器不发 Origin**（fetch 规范只对跨源请求带 Origin）→ 掉进 `assertLocalRequest` 最后那条分支；
+  而 `memeApiHeaders()`（`client.js:140`）在拿不到 `window.__DSH_MEME_TOKEN__` 时只有 `Content-Type`，
+  `x-dsh-meme: 1` 也没带 → **403 → `memeCodeIndex` 空 → 每处 `[表情: …] ·码` 的 `memeSrcFor(hit)` 都返回 `''`
+  → 走「无命中」降级分支**：注释被摘掉、图一张不插。就是第五刀那道门把自家界面挡在外面。
+
+改法（`index.js`：`assertLocalRequest` 上游新增 `sameOriginInitiator`）：
+
+- GET 额外认浏览器自己盖的同源戳 **`Sec-Fetch-Site: same-origin`**；`same-site` / `cross-site` 显式拦下
+  （正向判据，不是 `else return true` —— 将来宿主把 web 挪到子域也不会悄悄放宽）。
+- `assertLocalRequest` 顺序：Host 回环 → 有 Origin 必须同源 → `x-dsh-meme: 1` 放行 → 只读 GET 且带同源戳 →
+  否则抛「缺少来源校验头」。**写路径一点没松**：不带 Origin 的写操作照样被挡在这里，高风险 op 照样要令牌。
+- **砍掉的一版**：本来还认「Referer 与 Host 同源」。实测（`node -e` 打活宿主）带 `Referer` 的请求仍然 403 ——
+  Node 的 fetch 根本不发 Referer（lib 开 no-referrer），浏览器在 `Referrer-Policy: no-referrer` 下也不发，
+  这条判据在真机上是死的。留着只会让人以为多一道保险，所以只留 `Sec-Fetch-Site`。
+- 顺带（`client.js`）：注入的 `<img>` 加 `loading="lazy"` + `decoding="async"`（长会话几百张图一起解码会卡帧、
+  图迟迟不出来）；面板加一个可点开的「自检」（索引状态 + 一次真发图探测），下回再出「图全空」他能一句话念给我。
+
+验证：`tools/_diag-auth.mjs` 从 12 条加到 **17 条全绿**（新增：同源戳 GET 放行、same-site / cross-site 拦下、
+只剩 Referer 拦下、裸 curl GET 拦下）；六个测试文件全绿（basic 6 / match 4 / pincode 5 / dominsert 7 /
+scope-order 10 / notext 16，`scope-order` 的 `KNOWN_CLOSURE_FORWARD` 认领了面板自检用的
+`memeIndex` / `memeCodeIndex` / `memeApiStatus`）；活宿主实测 7 条：裸 GET 索引 403、同源戳 200（264216B）、
+cross-site 403、`x-dsh-meme` 200、跨站 Origin 403、面板裸取 403、面板同源戳 200。
+
