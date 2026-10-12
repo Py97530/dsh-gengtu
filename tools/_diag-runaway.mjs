@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
-const src = readFileSync(join(HERE, '..', '..', 'client.js'), 'utf8')
+const src = readFileSync(join(HERE, '..', 'client.js'), 'utf8')
 // ⚠️ 这个文件是 CRLF：不把 \r 去掉，正则字面量的「行内结束」判据会把换行认成 \r，
 // 整个计数就假报（曾经拿它得出「净数 -4」，其实是 -2）。统一先归一化成 LF 再数。
 const lines = src.replace(/\r\n/g, '\n').split('\n')

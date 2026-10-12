@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
-const src = readFileSync(join(HERE, '..', '..', 'client.js'), 'utf8')
+const src = readFileSync(join(HERE, '..', 'client.js'), 'utf8')
 
 const from = Number(process.argv[2] || 1)
 const to = Number(process.argv[3] || 2714)

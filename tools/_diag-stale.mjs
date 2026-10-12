@@ -1,6 +1,6 @@
 // 一次性调试：为什么 markStaleRawText 没给行盖章
 import { readFileSync } from 'node:fs'
-const src = readFileSync(new URL('../../client.js', import.meta.url), 'utf8')
+const src = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
 const grab = (re, n) => { const m = src.match(re); if (!m) throw new Error('找不到 ' + n); return m[0] }
 const fnSrc = [
   grab(/const MEME_EXCLUDE_SEL = '[^']*'/, 'sel'),

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
-const lines = readFileSync(join(HERE, '..', '..', 'client.js'), 'utf8').split(/\r?\n/)
+const lines = readFileSync(join(HERE, '..', 'client.js'), 'utf8').split(/\r?\n/)
 
 let depth = 0
 let state = 'code' // code | line | block | sq | dq | tpl | re

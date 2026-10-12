@@ -1,5 +1,5 @@
 /**
- * test/_diag-fnstart.mjs — 诊断 fnStart 归属：列出「闭包前向引用」候选，
+ * tools/_diag-fnstart.mjs — 诊断 fnStart 归属：列出「闭包前向引用」候选，
  * 并检查每个候选的「最近的、缩进更浅的 function 头」是不是就是 fnStart。
  * 用法：node tools/_diag-fnstart.mjs
  * （不进 test 套件，靠 PowerShell 复制正则容易出错，所以独立成文件。）
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const LINES = readFileSync(join(__dirname, '..', '..', 'client.js'), 'utf8').split('\n')
+const LINES = readFileSync(join(__dirname, '..', 'client.js'), 'utf8').split('\n')
 
 const isFnHead = (l) => {
   const t = l.trim()

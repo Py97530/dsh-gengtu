@@ -1,5 +1,5 @@
 /**
- * test/_diag-scope.mjs — 一次性诊断：列出符号的「声明行（含类型）/ 引用行@所属函数」。
+ * tools/_diag-scope.mjs — 一次性诊断：列出符号的「声明行（含类型）/ 引用行@所属函数」。
  * 用法：node --import ./test/stub/register.mjs tools/_diag-scope.mjs name1 name2 …
  * （不进 test 套件；`.mjs` 直接在 node 里跑，省得跟 PowerShell 的引号打架。）
  */
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const LINES = readFileSync(join(__dirname, '..', '..', 'client.js'), 'utf8').split('\n')
+const LINES = readFileSync(join(__dirname, '..', 'client.js'), 'utf8').split('\n')
 const names = new Set(process.argv.slice(2) || [])
 if (!names.size) names.add('x')
 

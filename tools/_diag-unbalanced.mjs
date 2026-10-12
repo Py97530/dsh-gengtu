@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
-const src = readFileSync(join(HERE, '..', '..', 'client.js'), 'utf8')
+const src = readFileSync(join(HERE, '..', 'client.js'), 'utf8')
 
 const lineOf = (idx) => src.slice(0, idx).split('\n').length
 const stack = []

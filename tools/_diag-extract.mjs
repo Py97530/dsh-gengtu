@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const src = readFileSync(join(HERE, '..', '..', 'client.js'), 'utf8')
+const src = readFileSync(join(HERE, '..', 'client.js'), 'utf8')
 const pick = (re, what) => {
   const m = src.match(re)
   if (!m) { console.log('✗ 没找到 ' + what); return '' }

@@ -1981,6 +1981,9 @@ window.__ModuleLoader__.load({
       // 现在失败就保持 null:之后再扫描到未装饰的 [表情: x] 会自然重试(指数退避,
       // 后端起来了自愈)。不另起定时器——扫描本身就是触发点,少一个要清理的生命周期。
       const MEME_INDEX_TIMEOUT = 15000
+      // [patch-dsh-meme-notext 2026-10-12 第二刀] 索引还没到手时先把标记藏起来的宽限期(ms)。
+      // 藏起来是为了消掉那一下闪现；超过这个时长图还没落下来就放回原文，宁可看见注释也别留空白。
+      const MEME_MASK_GRACE = 1600
       const MEME_INDEX_RETRY_BASE = 2000
       const MEME_INDEX_RETRY_MAX = 30000
       const absMemeUrl = (u, path) => {
@@ -2402,10 +2405,17 @@ const decorateMemeText = () => {
           while ((m = MEME_TEXT_RE.exec(text))) matches.push(m)
           if (matches.length === 0) continue
           const needsLookup = matches.some((hit) => !hit[2]) // [patch-dsh-meme-pincode] 有码就不用查表
-          if (needsLookup && !memeIndex) {
-            loadMemeIndex()
-            continue
-          }
+          // [patch-dsh-meme-notext 2026-10-12 第二刀] 用户报：「发表情包的时候，注释不会立马
+          // 消失，先冒出来一串给 AI 的注释」。这一支就是那个空窗：码/描述还没查表，图一个都没
+          // 插上，而下面所有隐藏逻辑的前提都是「这一行已经有 img[data-meme-img]」——
+          // 于是索引没到手之前（最长 15s）那串注释就明晃晃挂着。
+          // 先把它摘掉（只摘那一段字，正文不动），等图落下来就自然留着藏；宽限期到点图还没来，
+          // unmaskStalePending() 会把原文放回去，不会留一块空气泡。用户在 DSH 里发的时候，
+          // 宿主那边「已发送」的气泡走的也是这段文本节点，所以这一下闪现在自己发的消息上最明显。
+          maskMarksInTextNode(node)
+          parent.dataset.memePendingAt = String(Date.now())
+          loadMemeIndex()
+
           if (needsLookup && recheck) {
             // 这一遍本来就是「码表刚更新」的重扫，还是查不到就直接放弃这一条（不装饰、
             // 不标 memeDecorated，下次别的事件驱动扫描还能再试），别再触发第三遍。
@@ -2522,6 +2532,7 @@ const decorateMemeText = () => {
         hideMemeRawText() // [patch-dsh-meme-notext] 图配上了就把注释原文摘出可见树
         markStaleRawText() // [patch-dsh-meme-notext] 宿主流式渲染重写过的文本节点：盖个记号
         hideStaleRawText() // [patch-dsh-meme-notext] 把那一行里还露着标记的层收掉
+        unmaskStalePending() // [patch-dsh-meme-notext 第二刀] 宽限期内没配上图的，把摘掉的原文放回来
       }
       // 设置侧边栏「表情包」行的齿轮图标替换成笑脸(dsh navIcon 硬编码,不支持自定义)
       const decorateNavIcon = () => {
@@ -2566,6 +2577,9 @@ const decorateMemeText = () => {
         if (scanning) return // 重入保护:装饰本身改 DOM,会再触发 observer
         scanning = true
         try {
+          // [patch-dsh-meme-notext 第二刀] 先查有没有「藏超时」的（索引挂了的时候，藏起来的那段
+          // 注释得放回去）。放在 decorateMemeText 前面：它可能会清 memeDecorated，正好让这一遍重扫。
+          unmaskStalePending()
           decorateMemeText()
           decorateNavIcon()
         } catch (error) {
@@ -2681,6 +2695,34 @@ const decorateMemeText = () => {
       if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)))
       parent.replaceChild(frag, node)
       return true
+    }
+
+    // [patch-dsh-meme-notext 2026-10-12 第二刀] 上面那一下「索引没到手就先摘掉」的兜底：
+    // 宽限期内图还没落下来（索引挂了 / 这张图真不在库里），就把摘掉的那段原文**放回可见**。
+    // 只认我们自己盖的两个东西：memePendingAt 和 [data-meme-hidden]；已经长出
+    // img[data-meme-img] 的行不动（那条路的藏是有依据的）。
+    const unmaskStalePending = () => {
+      if (!document.querySelector('[data-meme-pending-at]')) return // 常态下这一句就返回了
+      const stale = []
+      for (const el of document.querySelectorAll('[data-meme-pending-at]')) {
+        const at = parseInt(el.getAttribute('data-meme-pending-at') || '0', 10) || 0
+        if (!at || Date.now() - at < MEME_MASK_GRACE) continue
+        stale.push(el)
+      }
+      for (const el of stale) {
+        el.removeAttribute('data-meme-pending-at')
+        if (el.querySelector('img[data-meme-img]')) continue // 图已经来了，藏得有理
+        for (const ghost of el.querySelectorAll('[data-meme-hidden]')) {
+          // 只放回**我们摘的那种**（装的是标记原文）；ghostFor() 造的占位 ghost 不动
+          if (/^\[(?:表情|m):/.test(ghost.textContent || '')) ghost.style.display = '' // 内联 display:none 撤掉
+        }
+        // 这一行还露着标记 → 别让下一遍冻结它，重新走一次装饰（真配不到图会走降级，只显示描述）
+        if (/\[(?:表情|m):/.test(textWithoutGhosts(el))) {
+          delete el.dataset.memeDecorated
+          delete el.dataset.memeDegradedAt
+        }
+        scheduleScan()
+      }
     }
 
     const hideMemeRawText = () => {

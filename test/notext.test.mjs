@@ -36,7 +36,10 @@ const fnSrc = (() => {
   const hide = grab(/const hideMemeRawText = \(\) => \{[\s\S]*?\n {4}\}/, 'hideMemeRawText')
   const mark = grab(/const markStaleRawText = \(\) => \{[\s\S]*?\n {4}\}/, 'markStaleRawText')
   const stale = grab(/const hideStaleRawText = \(\) => \{[\s\S]*?\n {4}\}/, 'hideStaleRawText')
-  return [consts, tw, mask, hide, mark, stale].join('\n')
+  // [第二刀] 消闪现那三样：宽限期常量 + 先摘后放回的两个函数。
+  const grace = grab(/const MEME_MASK_GRACE = \d+/, 'MEME_MASK_GRACE')
+  const unmask = grab(/const unmaskStalePending = \(\) => \{[\s\S]*?\n {4}\}/, 'unmaskStalePending')
+  return [consts, grace, tw, mask, hide, mark, stale, unmask].join('\n')
 })()
 
 // ---- 够用的假 DOM：元素 / 文本节点 / TreeWalker / 选择器 / 文档片段 --------
@@ -116,7 +119,17 @@ function makeEl(tag) {
     parentNode: null,
     attrs: {},
     style: {},
-    textContent: '',
+    // [第二刀 2026-10-12] 这里原来是 `textContent: ''` 一个死字段 —— maskMarksInTextNode 那行
+    // `ghost.textContent = hit[0]` 赋值**悄悄丢掉**，ghost 是空的；unmaskStalePending 靠
+    // `ghost.textContent` 判「这是不是我们摘的注释」于是永远不认（3 条新用例假红）。
+    // 真 DOM 的 textContent 是可写属性 → 假 DOM 也得给 setter：清空子节点、放一个文本节点。
+    get textContent() {
+      return this.childNodes.map((c) => (c.nodeType === TEXT ? c.nodeValue : c.textContent)).join('')
+    },
+    set textContent(v) {
+      this.childNodes = []
+      this.appendChild({ nodeType: TEXT, nodeValue: String(v), parentNode: null })
+    },
     className: '',
     appendChild(c) { c.parentNode = el; el.childNodes.push(c); return c },
     replaceChild(frag, old) {
@@ -192,19 +205,33 @@ function makeEl(tag) {
 }
 
 // ---- 组装：把抠出来的函数放进一个能看见 document / NodeFilter 的作用域 -----
-const buildAll = (doc) => {
-  const fn = new Function('document', 'NodeFilter', fnSrc + '\n return { hideMemeRawText, markStaleRawText, hideStaleRawText }')
-  return fn(doc, { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 })
+const buildAll = (doc, opts = {}) => {
+  const loadMemeIndex = opts.loadMemeIndex || (() => {})
+  const scheduleScan = opts.scheduleScan || (() => {})
+  const DateMock = opts.Date || Date
+  const fn = new Function(
+    'document', 'NodeFilter', 'loadMemeIndex', 'scheduleScan', 'Date',
+    fnSrc + '\n return { hideMemeRawText, markStaleRawText, hideStaleRawText, maskMarksInTextNode, unmaskStalePending }'
+  )
+  return fn(doc, { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 }, loadMemeIndex, scheduleScan, DateMock)
 }
 const build = (doc) => buildAll(doc).hideMemeRawText
 
-// 把一棵假 DOM 里**还看得见**的文本拼出来（跳过 data-meme-hidden 子树）
+// 把一棵假 DOM 里**还看得见**的文本拼出来。
+// [第二刀 2026-10-12] 按真 DOM 的口径：maskMarksInTextNode 的 ghost 盖的是**两样**
+// （data-meme-hidden 属性 + 内联 display:none），放回时只撤后者。所以「属性在、但内联样式是
+// 空的」= 已经放回来了，算看得见；只认属性、或者还按着 display:none，才算看不见。
+const isHiddenChild = (child) => {
+  if (child.style && child.style.display === 'none') return true
+  const flagged = child.attrs['data-meme-hidden'] !== undefined || child.dataset.memeHidden
+  return !!flagged && !child.style
+}
 const visibleText = (node) => {
   let out = ''
   for (const child of node.childNodes || []) {
     if (child.nodeType === TEXT) { out += child.nodeValue; continue }
     if (child.nodeType !== ELEMENT) continue
-    if (child.attrs['data-meme-hidden'] !== undefined || child.dataset.memeHidden) continue
+    if (isHiddenChild(child)) continue
     out += visibleText(child)
   }
   return out
@@ -370,4 +397,93 @@ test('兜底层：摘过的 ghost 不重复摘（幂等）', () => {
   const ghosts2 = doc.body.querySelectorAll('[data-meme-hidden]').length
   assert.equal(once, twice, '第二遍又改了可见文本')
   assert.equal(ghosts1, ghosts2, 'ghost 越裹越多')
+})
+
+// ---- [第二刀 2026-10-12] 消闪现：索引没到手的那段空窗 ----------------------------------
+// 病：码/描述还没查表、图一张都没插，而所有隐藏逻辑的前提都是「这一行已经有 img」——
+// 那串 [表情: …] ·码 就明晃晃挂在气泡里，用户 m02392 报的「先出现一串给 AI 的注释」就是它。
+// 药：宽限期内先摘掉，超过 MEME_MASK_GRACE 图还没来就放回去（宁可看见注释，别留空白）。
+// 假 DOM 没有真时钟，这里注入一个能手动拨的 Date.now。
+
+const makeClock = (start = 1_700_000_000_000) => {
+  let now = start
+  const FakeDate = { now: () => now }
+  return { FakeDate, tick: (ms) => { now += ms }, at: () => now }
+}
+
+// 造一行「还没配图、但已经在等索引」的消息（decorateMemeText 里那支分支的产物）
+const pendingRow = (doc, text) => {
+  const built = row(doc, { withImg: false, text })
+  built.bubble.dataset.memePendingAt = String(1)
+  return built
+}
+
+test('消闪现：宽限期内先把注释摘掉（这一刻图还没来）', () => {
+  const doc = makeDoc()
+  const { bubble } = pendingRow(doc, '哈哈 ' + MARK)
+  const api = buildAll(doc)
+  api.maskMarksInTextNode(doc.body.querySelector('p').childNodes[0])
+  bubble.dataset.memePendingAt = String(1) // 盖时间戳（真代码在这里写 Date.now()）
+  const seen = visibleText(doc.body)
+  assert.ok(!seen.includes('[表情:'), '空窗期注释还看得见：' + seen)
+  assert.ok(!seen.includes('·c44807b'), '空窗期稳定码还看得见：' + seen)
+  assert.ok(seen.includes('哈哈'), '正文被误伤了：' + seen)
+})
+
+test('消闪现：超了宽限期还没配上图，原文放回来（宁可看见注释，别留空白）', () => {
+  const doc = makeDoc()
+  const clock = makeClock()
+  const { bubble, textNode } = row(doc, { withImg: false, text: MARK })
+  const api = buildAll(doc, { Date: clock.FakeDate })
+  api.maskMarksInTextNode(textNode)
+  bubble.dataset.memePendingAt = String(clock.at())
+  assert.ok(!visibleText(doc.body).includes('[表情:'), '前提：先摘掉了')
+  clock.tick(1600)
+  api.unmaskStalePending()
+  const seen = visibleText(doc.body)
+  assert.ok(seen.includes('[表情:'), '超期后原文没放回来：' + seen)
+  assert.equal(bubble.getAttribute('data-meme-pending-at'), null, '超期的戳没清掉（下一遍还得再算一次）')
+  assert.equal(bubble.dataset.memeDecorated, undefined, '这一行还露着标记却没解锁，下一遍扫描会跳过它')
+})
+
+test('消闪现：宽限期内不许放回（就是靠这段窗口消掉闪现的）', () => {
+  const doc = makeDoc()
+  const clock = makeClock()
+  const { bubble, textNode } = row(doc, { withImg: false, text: MARK })
+  const api = buildAll(doc, { Date: clock.FakeDate })
+  api.maskMarksInTextNode(textNode)
+  bubble.dataset.memePendingAt = String(clock.at())
+  clock.tick(1599)
+  api.unmaskStalePending()
+  assert.ok(!visibleText(doc.body).includes('[表情:'), '还没到点就把注释放回来了，闪现照样有')
+})
+
+test('消闪现：图真配上了的话，超期也不放回（藏得有依据）', () => {
+  const doc = makeDoc()
+  const clock = makeClock()
+  const { bubble, textNode } = row(doc, { withImg: true, text: '看这个 ' + MARK })
+  const api = buildAll(doc, { Date: clock.FakeDate })
+  api.maskMarksInTextNode(textNode)
+  bubble.dataset.memePendingAt = String(clock.at())
+  clock.tick(99999)
+  api.unmaskStalePending()
+  assert.ok(!visibleText(doc.body).includes('[表情:'), '图都出来了还把注释放回来')
+  assert.ok(visibleText(doc.body).includes('看这个'), '正文被误伤了')
+})
+
+test('消闪现：放回之后是真的重扫，不是每遍都放一次（幂等）', () => {
+  const doc = makeDoc()
+  const clock = makeClock()
+  const { bubble } = row(doc, { withImg: false, text: MARK })
+  let scans = 0
+  const api = buildAll(doc, { Date: clock.FakeDate, scheduleScan: () => { scans += 1 } })
+  const inner = bubble.querySelector('p')
+  api.maskMarksInTextNode(inner.childNodes[0])
+  bubble.dataset.memePendingAt = String(clock.at())
+  clock.tick(2000)
+  api.unmaskStalePending()
+  assert.equal(scans, 1, '放回之后该重扫一次')
+  api.unmaskStalePending()
+  assert.equal(scans, 1, '没戳了还在扫（每遍都白跑一趟）')
+  assert.ok(visibleText(doc.body).includes('[表情:'), '正文态被改坏了')
 })

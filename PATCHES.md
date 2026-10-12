@@ -177,6 +177,50 @@ Host 同源；没 Origin 要 `x-dsh-meme: 1` 或 `sec-fetch-site: same-origin`�
 
 - 这套改动**全部只落在工作区**，宿主进程里跑的还是旧代码 —— 重启 + 刷新之后才算现场验收：
   注释不再露 / 正文不再被吞 / 图库页与导出照常（**门收紧了，最怕把自己的页面打成 403 空白**）。
-- 六份单测（basic / match / pincode / dominsert / scope-order / notext=11 条）+ `_diag-apply.mjs` 三个插槽 +
+- 六份单测（basic / match / pincode / dominsert / scope-order / notext=16 条）+ `_diag-apply.mjs` 三个插槽 +
   `_diag-auth.mjs` 12 条全绿，但这都是**假 DOM / 抠源码**级别的验证，没有一条是浏览器里的端到端。
 - 验收线剩下的 AC-8（导出导入往返）、AC-4（去重键）只有推理与单测，没在真机上走过一遍。
+
+## 2026-10-12 第五刀：注释的闪现（第二刀）
+
+标记还是 `[patch-dsh-meme-notext]`，但治的是**另一种病**：不是「图出来了注释还杵着」（那是前几刀），
+而是「图还没出来、注释先闪一下」。用户原话：「表情包他不会立马出来而是会出现一串给 ai 的注释，
+我希望屏蔽或过滤这段注释文本，只输出表情包」。
+
+病根在 `decorateMemeText()` 里那支 `if (needsLookup && !memeIndex) { loadMemeIndex(); continue }`：
+码/描述要查表才知道配哪张图，而**所有隐藏逻辑的前提都是「这一行已经有 `img[data-meme-img]`」**
+（`hideMemeRawText()` 第一句就是这个判断）。索引没到手（`MEME_INDEX_TIMEOUT` 最长 15 秒）
+那段时间里，`[表情: …] ·码` 明晃晃挂在气泡里。用户自己发的消息最明显 —— 宿主把「已发送」的气泡
+也渲染成带标记的文本节点。
+
+改法：**索引没到手也先把标记摘掉，再盖一个宽限时间戳；到点图还没来就放回原文。**
+
+- 新常量 `MEME_MASK_GRACE = 1600`（紧挨 `MEME_INDEX_TIMEOUT`）：藏多久算「等不到了」。
+- 那支分支里先 `maskMarksInTextNode(node)`，再 `parent.dataset.memePendingAt = String(Date.now())`，
+  然后才是 `loadMemeIndex()`（不再 `continue` —— 这一遍照样往下走降级逻辑）。
+- 新增工厂顶层 `unmaskStalePending()`：`if (!document.querySelector('[data-meme-pending-at]')) return`
+  常态一句返回；超期的行里把**我们摘的那种** ghost（内容以 `/^\[(?:表情|m):/` 开头）的
+  `style.display` 撤掉放回（`ghostFor()` 造的占位 ghost 不动）；这一行若仍露着标记就
+  `delete el.dataset.memeDecorated` / `delete el.dataset.memeDegradedAt`（否则下一遍 TreeWalker
+  跳过它、永不重试），最后 `scheduleScan()` 让重扫走装饰 → 真配不到就降级、只显示描述。
+- 调用点两处：`decorateMemeText()` 末尾 `hideStaleRawText()` 之后；`runScan()` 的 try 里**放在
+  `decorateMemeText()` 之前**（它会清 `memeDecorated`，正好让这一遍重扫）。
+
+回归测试 `test/notext.test.mjs` 从 11 条加到 **16 条**，新增 5 条走「注入假时钟」这条路：
+宽限期内先摘掉 / 超期放回 / 宽限期内不许放回 / 图真配上了超期也不放回 / 放回后重扫且幂等。
+`test/scope-order.test.mjs` 的 `KNOWN_CLOSURE_FORWARD` 补 `maskMarksInTextNode` / `unmaskStalePending`
+（两个调用点都在扫描驱动的执行路径上，不在 `apply()` 的同步起点）。
+
+⚠️ 这一刀顺带修掉两处**测试脚手架自己的假红**（不是产品代码的 bug，但不修就测不出真东西）：
+
+1. 假 DOM 的 `textContent` 原来是个死字段 `textContent: ''` → `maskMarksInTextNode` 里
+   `ghost.textContent = hit[0]` **赋值被悄悄丢掉**，ghost 是空的，`unmaskStalePending` 判「这是不是
+   我们摘的注释」永远不认。真 DOM 的 `textContent` 可写，假 DOM 得给 setter。
+2. `visibleText()`（测试里拼「还看得见什么」的那个镜头）只认 `data-meme-hidden` 属性。可
+   `unmaskStalePending` 的放回动作是 `ghost.style.display = ''` —— **属性还在、样式撤了**。
+   镜头不改就会把「放回来了」误判成「还藏着」。现在按真 DOM 口径：还按着 `display:none`、
+   或者只有属性且没有内联样式，才算看不见。
+
+诊断脚本 `tools/_diag-flash.mjs`：把 `unmaskStalePending` 那一族真源码抠出来、往关键步骤插打印，
+用最小假 DOM 走一遍「摘 → 超期 → 放回」。
+
