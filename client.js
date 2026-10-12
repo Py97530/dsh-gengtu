@@ -2089,18 +2089,8 @@ window.__ModuleLoader__.load({
         ghost.textContent = raw
         return ghost
       }
-      // 判断「这层是不是已经空了、要不要隐藏」必须无视 ghost:ghost 里装着原文标记,
-      // 拿 textContent 判空会永远非空,气泡里会留一块空白。
-      const textWithoutGhosts = (el) => {
-        let out = ''
-        for (const child of el.childNodes) {
-          if (child.nodeType === 3) { out += child.nodeValue || ''; continue }
-          if (child.nodeType !== 1) continue
-          if (child.dataset && child.dataset.memeHidden) continue
-          out += textWithoutGhosts(child)
-        }
-        return out
-      }
+      // [patch-dsh-meme-notext 2026-10-12] textWithoutGhosts 挪到工厂顶层了（原来在这行）——
+      // 新加的那层 CSS/JS 兜底在 apply 外面，得能取到它。
       // [patch-dsh-meme-notext 2026-10-12] 把「已经配到图的那些 [表情: 描述] ·码 原文」从可见
       // 文本里摘掉——**不再假设它长在哪一层**。用户报：图是出来了，可那串给模型看的注释还杵在
       // 气泡里（他能选中、能复制）。前两版判据都押在 DOM 形状上：第一版要求注释元素是 img 的
@@ -2110,40 +2100,6 @@ window.__ModuleLoader__.load({
       // <span data-meme-hidden> 裹住（display:none）——span 是不是 img 的兄弟、爷爷是谁，
       // 全都无所谓。ghost 里那份原文照旧保留，别的插件比对 textContent 仍能逐字对上。
       // 同一节点只裹一次（裹完它就不在可见树里了），所以重复调用是幂等的。
-      const hideMemeRawText = () => {
-        if (!document.querySelector('img[data-meme-img],img[data-meme-hide-raw]')) return
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\[(?:表情|m):/.test(n.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) })
-        const found = []
-        let cur
-        while ((cur = walker.nextNode())) found.push(cur)
-        for (const node of found) {
-          const parent = node.parentElement
-          if (!parent) continue
-          if (parent.closest('[data-meme-hidden]')) continue // 我们自己那份 ghost，留着
-          if (parent.closest('input,textarea,[contenteditable="true"]')) continue
-          const row = parent.closest('[data-chat-flow],[data-chat-flow-key],[data-time-hover-root]')
-          if (!row || !row.querySelector('img[data-meme-img]')) continue // 这条消息真把图配上了才摘
-          const text = node.nodeValue || ''
-          const re = /\[(?:表情|m):[^\]]*\](?:\s*·c[0-9a-f]{5,6})?(?:\((https?:\/\/[^\s)]+)\))?/g
-          let at = 0
-          let hit
-          const frag = document.createDocumentFragment()
-          let wrapped = false
-          while ((hit = re.exec(text))) {
-            if (hit.index > at) frag.appendChild(document.createTextNode(text.slice(at, hit.index)))
-            const ghost = document.createElement('span')
-            ghost.setAttribute('data-meme-hidden', '1')
-            ghost.style.display = 'none'
-            ghost.textContent = hit[0]
-            frag.appendChild(ghost)
-            wrapped = true
-            at = hit.index + hit[0].length
-          }
-          if (!wrapped) continue
-          if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)))
-          node.parentNode.replaceChild(frag, node)
-        }
-      }
       // 流式渲染会覆盖我们的注入,同一个 [表情: x] 可能被装饰两次 → 同一消息行挂两张相同的图
       // (issue #22 第 3 条:刷新后稳态只剩一张,说明是竞态而不是双注入)。按「消息行 + 描述」
       // 幂等去重:没有重复时零副作用,所以每轮扫描完无脑跑一次就行。
@@ -2547,6 +2503,8 @@ const decorateMemeText = () => {
         }
         dedupeMemeImages()
         hideMemeRawText() // [patch-dsh-meme-notext] 图配上了就把注释原文摘出可见树
+        markStaleRawText() // [patch-dsh-meme-notext] 宿主流式渲染重写过的文本节点：盖个记号
+        hideStaleRawText() // [patch-dsh-meme-notext] 把那一行里还露着标记的层收掉
       }
       // 设置侧边栏「表情包」行的齿轮图标替换成笑脸(dsh navIcon 硬编码,不支持自定义)
       const decorateNavIcon = () => {
@@ -2658,6 +2616,94 @@ const decorateMemeText = () => {
       ))
     }
 
+    // [patch-dsh-meme-notext 2026-10-12] 这两块本来写在 apply() 里，现在提到工厂顶层：
+    // 兜底那一层要在 apply 外面也能调 hideMemeRawText，而且它自己要用 textWithoutGhosts。
+    // 判断「这层是不是已经空了、要不要隐藏」必须无视 ghost——ghost 里装着原文标记，
+    // 拿 textContent 判空会永远非空，气泡里会留一块空白。
+    const textWithoutGhosts = (el) => {
+      let out = ''
+      for (const child of el.childNodes) {
+        if (child.nodeType === 3) { out += child.nodeValue || ''; continue }
+        if (child.nodeType !== 1) continue
+        if (child.dataset && child.dataset.memeHidden) continue
+        out += textWithoutGhosts(child)
+      }
+      return out
+    }
+
+    const hideMemeRawText = () => {
+      if (!document.querySelector('img[data-meme-img],img[data-meme-hide-raw]')) return
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\[(?:表情|m):/.test(n.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) })
+      const found = []
+      let cur
+      while ((cur = walker.nextNode())) found.push(cur)
+      for (const node of found) {
+        const parent = node.parentElement
+        if (!parent) continue
+        if (parent.closest('[data-meme-hidden]')) continue // 我们自己那份 ghost，留着
+        if (parent.closest('input,textarea,[contenteditable="true"]')) continue
+        const row = parent.closest('[data-chat-flow],[data-chat-flow-key],[data-time-hover-root]')
+        if (!row || !row.querySelector('img[data-meme-img]')) continue // 这条消息真把图配上了才摘
+        const text = node.nodeValue || ''
+        const re = /\[(?:表情|m):[^\]]*\](?:\s*·c[0-9a-f]{5,6})?(?:\((https?:\/\/[^\s)]+)\))?/g
+        let at = 0
+        let hit
+        const frag = document.createDocumentFragment()
+        let wrapped = false
+        while ((hit = re.exec(text))) {
+          if (hit.index > at) frag.appendChild(document.createTextNode(text.slice(at, hit.index)))
+          const ghost = document.createElement('span')
+          ghost.setAttribute('data-meme-hidden', '1')
+          ghost.style.display = 'none'
+          ghost.textContent = hit[0]
+          frag.appendChild(ghost)
+          wrapped = true
+          at = hit.index + hit[0].length
+        }
+        if (!wrapped) continue
+        if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)))
+        node.parentNode.replaceChild(frag, node)
+      }
+    }
+
+    // [patch-dsh-meme-notext 2026-10-12] 兜底那层：JS 摘过之后，宿主的流式渲染还会把纯文本
+    // 子节点**重写成新的文本节点**，而父元素还挂着 data-meme-decorated → decorateMemeText 的
+    // TreeWalker 直接跳过、JS 再也不会碰它，气泡里就永久留着一行 [表情: …]（用户 2026-10-12
+    // 复制给我的就是这个）。这里做两件事：① 在「还露着标记、而且这一行真配到图了」的消息行上
+    // 盖 data-meme-rawleft；② 把那一行里**可见文本仍含标记字样**的元素收掉。用 JS 逐元素判而
+    // 不是纯 CSS——CSS 没有「这个元素里有这段字」的选择器，`:has(>img)` 也匹配不到「img 在
+    // 兄弟层、注释在祖父层」的形状。没配到图的行一律不碰（降级态要看得见描述，不能给空气泡）。
+    const markStaleRawText = () => {
+      for (const el of document.querySelectorAll('[data-meme-rawleft]')) delete el.dataset.memeRawleft
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\[(?:表情|m):/.test(n.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) })
+      let cur
+      while ((cur = walker.nextNode())) {
+        const parent = cur.parentElement
+        if (!parent) continue
+        if (parent.closest('[data-meme-hidden]')) continue // 自己那份 ghost 不算
+        if (parent.closest('input,textarea,[contenteditable="true"]')) continue
+        const row = parent.closest('[data-chat-flow],[data-chat-flow-key],[data-time-hover-root]')
+        if (!row || !row.querySelector('img[data-meme-img]')) continue
+        row.dataset.memeRawleft = '1'
+      }
+    }
+    const hideStaleRawText = () => {
+      for (const row of document.querySelectorAll('[data-meme-rawleft]')) {
+        for (const el of row.querySelectorAll('*')) {
+          if (el.tagName === 'IMG' || el.dataset.memeHidden) continue
+          if (el.querySelector('img[data-meme-img]')) continue // 有图的层不能吃
+          if (/\[(?:表情|m):/.test(textWithoutGhosts(el))) el.style.display = 'none'
+        }
+      }
+    }
+    ;(() => {
+      if (document.getElementById('dsh-meme-notext-css')) return
+      const st = document.createElement('style')
+      st.id = 'dsh-meme-notext-css'
+      // 老兄弟判据留着：注释元素真跟图片同层时，CSS 比 JS 快一步（不等下一轮扫描）。
+      st.textContent = 'img[data-meme-img]:not([data-meme-hidden])~*:not([data-meme-hidden]):not(img):not([data-meme-img]){display:none!important}'
+      document.head.appendChild(st)
+    })()
     exports.apply = apply
     exports.inject = inject
     // 纯函数导出仅用于回归测试(node --test),宿主/打包不消费

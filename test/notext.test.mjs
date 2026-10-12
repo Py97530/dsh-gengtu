@@ -20,10 +20,14 @@ import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const src = readFileSync(join(HERE, '..', 'client.js'), 'utf8')
 
+// ⚠️ 这两个函数现在都在**工厂顶层**（4 空格缩进），不是 apply() 里面（6 空格）——
+// 兜底那层要在 apply 外面调它。抠源码的正则跟着缩进走，挪了地方就得一起改。
 const fnSrc = (() => {
-  const m = src.match(/const hideMemeRawText = \(\) => \{[\s\S]*?\n {6}\}/)
+  const m = src.match(/const hideMemeRawText = \(\) => \{[\s\S]*?\n {4}\}/)
   assert.ok(m, '没能在 client.js 里找到 hideMemeRawText（源码结构变了？测试要跟着改）')
-  return m[0]
+  const tw = src.match(/const textWithoutGhosts = \(el\) => \{[\s\S]*?\n {4}\}/)
+  assert.ok(tw, '没能在 client.js 里找到 textWithoutGhosts（它该在工厂顶层）')
+  return tw[0] + '\n' + m[0]
 })()
 
 // ---- 够用的假 DOM：元素 / 文本节点 / TreeWalker / 选择器 / 文档片段 --------

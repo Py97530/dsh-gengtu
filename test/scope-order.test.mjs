@@ -227,6 +227,9 @@ const KNOWN_CLOSURE_FORWARD = [
   'onTogglePack', 'load', 'setPreviewPack', 'setConfirmBox', 'savePack',
   'memeSortNewestFirst', 'doDeleteTag', 'doDelete', 'memeLazyBg', 'MemeButton',
   'isReadonlyEditor', 'sendInner', 'decorateMemeText', 'scale', 'close',
+  // [patch-dsh-meme-notext 2026-10-12] 注释隐藏那四个：都声明在工厂顶层（apply 之前），
+  // 调用点全在 apply 内部 / 下一轮扫描里 —— 属于「声明在前、调用在后」，登记进来免得误报。
+  'textWithoutGhosts', 'hideMemeRawText', 'markStaleRawText', 'hideStaleRawText',
 ]
 
 test('闭包前向引用有名单：新增一条就得在这里认领（豁免不能静默变多）', () => {
