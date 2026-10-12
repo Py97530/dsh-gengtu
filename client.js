@@ -1485,7 +1485,10 @@ window.__ModuleLoader__.load({
       const [seedMode, setSeedMode] = React.useState(false)
       const [picked, setPicked] = React.useState([]) // [{path,url,caption,tag}]，数组顺序 = 勾选顺序
       const [seedNote, setSeedNote] = React.useState('')
-      // [patch-dsh-meme-diag] 点图没反应时的现场取证：把这一格用到的东西摆到面板上给用户念。
+      // [patch-dsh-meme-diag] 点图没反应时的现场取证（**默认关**）：
+      // 出错时（点图抛错）无条件亮，用来抓「点了完全没反应」；
+      // 平时那行「写:… | 数据:… | 句柄:… | 提:… | 图:…」只在下面这条开关打开时才写出来。
+      // 开法（任一）：控制台 `__DSH_MEME_DIAG__ = true`，或 `localStorage.dshGengtuDiag = '1'`。
       const [diag, setDiag] = React.useState('')
 
       React.useEffect(() => { setMemeLimit(72) }, [memeQuery, packId]) // [patch-dsh-meme-window] 换词/换库从头铺
@@ -1636,13 +1639,20 @@ window.__ModuleLoader__.load({
         } catch (e2) { return false }
       }
       // 点击:发 [表情: 描述] 文本,前端按描述配图。
+      // [patch-dsh-meme-diag] 取证开关，默认关（用户报「这行字一直挂在那儿」）：
+      // 抛错那条永远亮（那才是真线索），平时那行只有开关打开才写。
+      const memeDiagOn = () => {
+        try { if (window.__DSH_MEME_DIAG__ === true) return true } catch (e) {}
+        try { if (localStorage.getItem('dshGengtuDiag') === '1') return true } catch (e) {}
+        return false
+      }
       const send = async (m) => {
         if (!m) return
         // [patch-dsh-meme-diag] 独立点击计数（存 localStorage，重启也在）：
         // 用户报告位时，这个数就能区分「处理器压根没被调用」和「调用了但后面没走通」。
         let n = 0
         try { n = (parseInt(localStorage.getItem('dshGengtuClickN') || '0', 10) || 0) + 1; localStorage.setItem('dshGengtuClickN', String(n)) } catch (e) {}
-        try { setDiag('点到了(第' + n + '次)，正在看写哪儿…') } catch (e) {}
+        try { if (memeDiagOn()) setDiag('点到了(第' + n + '次)，正在看写哪儿…') } catch (e) {}
         try {
           await sendInner(m)
         } catch (err) {
@@ -1697,7 +1707,7 @@ window.__ModuleLoader__.load({
           let sub = 'no-actions'
           try { if (actions && actions.submit) { actions.submit(); sub = 'actions.submit' } } catch (e) { sub = 'submit 抛错: ' + (e && e.message) }
           if (sub !== 'actions.submit') sub = submitViaEditor(ed) ? '按钮/回车' : '没找到提交按钮'
-          try { setDiag('写:' + how + ' | 数据:' + dataFrom + ' | 句柄:' + acts + ' | 提:' + sub + ' | 图:' + (m.url ? '有' : '无')) } catch (e) {}
+          try { if (memeDiagOn()) setDiag('写:' + how + ' | 数据:' + dataFrom + ' | 句柄:' + acts + ' | 提:' + sub + ' | 图:' + (m.url ? '有' : '无')) } catch (e) {}
         }
         if (wrote && haveState) doSubmit()
         else if (typeof setTimeout === 'function') setTimeout(doSubmit, 90)
