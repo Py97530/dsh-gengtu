@@ -15,7 +15,7 @@
 | client.js | `[patch-dsh-meme-glass]` | 图库/选择器毛玻璃样式 | 好看 |
 | client.js | `[patch-dsh-meme-below-text]` | 表情包渲染在文字下方 | 文字在上、图在下，读起来顺 |
 | client.js | `[patch-dsh-meme-zoom]` | 点消息里的图放大看 | 小图看不清 |
-| client.js | `[patch-dsh-meme-pickmap]` | 点选图后按 caption→url 精确发送 | 点 A 发出 B（靠描述模糊匹配会串图） |
+| client.js | `[patch-dsh-meme-pickmap]` | 点选图后按 caption→url 精确发送 | 点 A 发出 B（靠描述模糊匹配会串图）；⭐ `memePickMap` 等三个符号**必须待在 factory 顶层** —— 原先放在 `apply()` 里，而点图 UI `MemeBoard`（1464 行）在 `apply(ctx)`（1939 行）**之前**，一跑就是 `ReferenceError`，见 `[patch-dsh-meme-defensive]` |
 | client.js | `[patch-dsh-meme-dualcode]` | 同时认 `[m:CODE]` 和 `[表情: 描述]` | 短码是稳定身份，旧语法是回退 |
 | client.js | `[patch-dsh-meme-hover]` | 悬停出大图预览 | 不用点开就知道是哪张 |
 | client.js | `[patch-dsh-meme-notitle]` | 摘掉原生 title 气泡 | 和悬停预览叠在一起，挡视线 |
@@ -40,6 +40,8 @@
 | client.js | `[patch-dsh-meme-seedpick]` | 图库面板加「挑选」模式（默认关；点图只勾选、右上角序号，导出发本地打包服务 `http://127.0.0.1:8796/submit`，另有「填进对话」兜底） | 要能在聊天窗口里直接挑图攒一份自带底图，不用另开窗口；做成默认关，普通用户点图就该直接发出去 |
 | client.js + index.js | `[patch-dsh-meme-window]` | 图库面板一次只铺 72 格、滚到底自动续（IntersectionObserver 哨兵 `mp-more`）；删图改成只摘掉本地那一格（失败才回退全量 `load()`）；宿主 `op:'delete'` 的存在性校验从全表 `list().some()` 改成按主键单查 | 用户报：删完表情包电脑卡几秒。本机实测整库 979 张铺满 = 141MB / 5.6 秒随机读，`node:sqlite` 又跑在后端主线程上 |
 | client.js | `[patch-dsh-meme-dominsert]` | 点图后的兜底不依赖插槽 prop：`actions.setDraft` 缺席时直接把 `[表情: 描述] ·码` 打进输入框（contenteditable 走 `execCommand('insertText')`、textarea/input 走原型原生 value setter + `input` 事件）；提交按 插槽 `submit` → 输入框那一带的发送按钮（按 `aria-label`/`title`/`data-testid` 认）→ 回车 依次试；认输入框时排除消息内容区 | 用户报：点了表情包**输入框里什么都不出来**。DSH 有的版本不给 `conversation.input.overlay` 这个插槽发 `inputActions`，`actions.setDraft`/`actions.submit` 都是 undefined，而调用点在 try/catch 里被静默吞掉 |
+| client.js | `[patch-dsh-meme-defensive]` | `memeCodeFromRow` / `MEME_CODE_RE` / `memePickMap` 三样提到 factory 顶层（`apply()` 里那份删掉）；取码包 `try`（失败只丢码、不许拖垮发送）；草稿现状改成「只有**真读到**宿主状态才认」（`haveState`），拿不到就一律走 DOM 那条路，免得拿 null 快照去 `setDraft` 反把草稿清空 | 用户 m00585 念出的现场行是 `点图抛错: memeCodeFromRow is not defined` —— 点图处理器第一句就 `ReferenceError`，抛在写草稿/提交**之前**，所以表现是「点了完全没反应」；前几轮全猜错了方向（插槽、鉴权、旧代码） |
+| client.js | `[patch-dsh-meme-diag]` | `send()` 拆成外壳 + `sendInner()`，外壳 `catch` 把异常写到图库面板顶上的取证行（`.mp-diag`，CSS 在样式表里），并记 `localStorage.dshGengtuClickN` 点击数；取证行内容 = `写:how / 数据:from / 句柄:sbi / 提:sub / 图:有` | 「点了没反应」时前端一点线索都不给，只能靠猜；有这一行用户念一句就能定位（这次就是这么破的案）。正常工作时这行不显示 |
 
 ## 高风险操作令牌
 
