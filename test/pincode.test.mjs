@@ -25,7 +25,43 @@ const pick = (re, what) => {
 }
 const reSrc = pick(/const MEME_TEXT_RE = \/.*?\/g/, 'MEME_TEXT_RE')
 const codeReSrc = pick(/const MEME_CODE_RE = \/.*?\/[a-z]*/, 'MEME_CODE_RE')
-const codeFnSrc = pick(/const memeCodeFromRow = \(row\) => \{[\s\S]*?\n {6}\}/, 'memeCodeFromRow')
+
+// 抠一个「从第 start 个字符起的整段代码」：从 start 处的花括号开始数，数平了就停。
+// 之前这里是 `[\s\S]*?\n {6}\}` —— 拿缩进当锚点，函数一挪出内层（缩进 6→4）就抠到
+// 隔壁去了、拼出来的源码语法错。改成数花括号之后，重排缩进/换行都不再影响它；
+// 字符串、模板串里的 `{` `}` 和正则字面量也跳过，免得数错。
+const sliceBalanced = (start) => {
+  let i = src.indexOf('{', start)
+  assert.ok(i >= 0, '这段代码里没找到函数体花括号')
+  let depth = 0
+  let quote = null
+  let inClass = false
+  for (; i < src.length; i++) {
+    const c = src[i]
+    if (quote) {
+      if (c === '\\') { i++; continue }
+      if (c === quote) quote = null
+      continue
+    }
+    if (c === '/' && src[i + 1] !== '/' && src[i + 1] !== '*') {
+      const prev = src[i - 1]
+      const canBeRegex = !/[\w)\]$]/.test(prev || '')
+      if (canBeRegex && (depth > 0 || i >= start)) {
+        i++
+        while (i < src.length && src[i] !== '/') { if (src[i] === '\\') i++; i++ }
+        inClass = false
+        continue
+      }
+    }
+    if (c === '"' || c === "'" || c === '`') { quote = c; continue }
+    if (c === '{') depth++
+    else if (c === '}') { depth--; if (depth === 0) return src.slice(start, i + 1) }
+  }
+  assert.fail('花括号没数平 —— client.js 里这段代码的结尾没找到')
+}
+const codeFnStart = src.indexOf('const memeCodeFromRow = (row) =>')
+assert.ok(codeFnStart >= 0, '没能在 client.js 里找到 memeCodeFromRow（源码结构变了？）')
+const codeFnSrc = sliceBalanced(codeFnStart)
 
 // 抠出来的源码拼成一个工厂函数求值，把三样东西还出来（ESM 是严格模式，eval 里声明的
 // const 不会漏到模块作用域，必须靠返回值拿）。

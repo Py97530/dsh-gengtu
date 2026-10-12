@@ -39,6 +39,7 @@
 | memes.js | `[patch-dsh-meme-seed]` | 保留「首启种图」机制但**包里不带图**（曾短暂带过自己挑的 57 张底图，后撤掉）：`seedLibrary()` 读包内 `seed/manifest.json`，没有就返回 0；有则 `INSERT OR IGNORE` 逐张导入、码按新路径(`memes/<tag>/seed-NNN.jpg`)重算、种完写 `.seeded` 记号（用户自己删光图后重启**不会**被硬塞回来） | 装完插件图库空空如也，新用户没法用；但随包分发别人的图有版权风险，所以机制留着、图不带 —— 想自带就自己放 `seed/` |
 | client.js | `[patch-dsh-meme-seedpick]` | 图库面板加「挑选」模式（默认关；点图只勾选、右上角序号，导出发本地打包服务 `http://127.0.0.1:8796/submit`，另有「填进对话」兜底） | 要能在聊天窗口里直接挑图攒一份自带底图，不用另开窗口；做成默认关，普通用户点图就该直接发出去 |
 | client.js + index.js | `[patch-dsh-meme-window]` | 图库面板一次只铺 72 格、滚到底自动续（IntersectionObserver 哨兵 `mp-more`）；删图改成只摘掉本地那一格（失败才回退全量 `load()`）；宿主 `op:'delete'` 的存在性校验从全表 `list().some()` 改成按主键单查 | 用户报：删完表情包电脑卡几秒。本机实测整库 979 张铺满 = 141MB / 5.6 秒随机读，`node:sqlite` 又跑在后端主线程上 |
+| client.js | `[patch-dsh-meme-dominsert]` | 点图后的兜底不依赖插槽 prop：`actions.setDraft` 缺席时直接把 `[表情: 描述] ·码` 打进输入框（contenteditable 走 `execCommand('insertText')`、textarea/input 走原型原生 value setter + `input` 事件）；提交按 插槽 `submit` → 输入框那一带的发送按钮（按 `aria-label`/`title`/`data-testid` 认）→ 回车 依次试；认输入框时排除消息内容区 | 用户报：点了表情包**输入框里什么都不出来**。DSH 有的版本不给 `conversation.input.overlay` 这个插槽发 `inputActions`，`actions.setDraft`/`actions.submit` 都是 undefined，而调用点在 try/catch 里被静默吞掉 |
 
 ## 高风险操作令牌
 

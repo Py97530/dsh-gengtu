@@ -105,6 +105,26 @@ window.__ModuleLoader__.load({
     ].join('')
 
     // 分类中文显示(仅 UI,存储/搜索仍是英文 tag)
+    // [patch-dsh-meme-pickmap] 点过的图：caption → url（MemeBoard 写、apply 读）
+    // ⚠️ 必须在 factory 顶层：MemeBoard 定在 1444 行、apply 从 1916 行才开始，
+    // 这俩（连带 memeCodeFromRow / MEME_CODE_RE）原来写在 apply() 里，
+    // 结果 MemeBoard 里的点图处理器一跑就是 ReferenceError，
+    // 整个 send() 当场死 → 用户看到「点图完全没反应」（2026-10-12 实测确认）。
+    const memePickMap = new Map()
+    // 行尾稳定码：`·c1a2b3`（keywords 里，由 _plugin_work\add-meme-codes.mjs 写入，
+    // 算法 = 'c' + sha1(path).slice(0,6)）。不是 [m:…] 那种短码：[m:…] 是 token 的
+    // 另一种写法，这个是「挂在标记后面的身份后缀」。
+    // ⚠️ `{5,6}` 不是笔误：V8（Node 24 / Chrome 桌面端实测）在「字符类 + 精确量词」上有个
+    // 可复现的怪癖 —— `c[0-9a-f]{6}` 匹配 'c0ffee' 返回 **false**（`{5}`、`{1,6}`、`{6,7}`
+    // 都正常，`c[a-z]{6}` 也正常，就 `[0-9a-f]` 这一类 + `{6}` 不行）。换成区间量词立刻正常。
+    const MEME_CODE_RE = /·(c[0-9a-f]{5,6})(?!\w)/
+    const memeCodeFromRow = (row) => {
+      const kw = String((row && row.keywords) || '')
+      const found = kw.match(new RegExp(MEME_CODE_RE.source, 'g'))
+      if (!found || !found.length) return ''
+      return found[found.length - 1].slice(1)
+    }
+
     const TAG_ZH = {
       angry: '生气', happy: '开心', sad: '难过', shy: '害羞', confused: '困惑',
       daily: '日常',
@@ -1346,6 +1366,8 @@ window.__ModuleLoader__.load({
       '.meme-picker .mp-more{flex:1 0 100%;text-align:center;padding:10px 0 4px;font-size:12px;color:var(--dsw-alias-text-3);user-select:none}',
       '.meme-picker .mp-pick{position:absolute;top:3px;right:3px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-layer-1);font-size:10px;line-height:16px;text-align:center;font-weight:600}',
       '.meme-picker .mp-seedbar{display:flex;align-items:center;gap:8px;padding:6px 2px 0;font-size:11px}',
+      // [patch-dsh-meme-diag] 点图没反应时的现场取证行（正常工作时不会出现）
+      '.meme-picker .mp-diag{display:block;margin:4px 0 0;padding:3px 6px;border-radius:5px;background:rgba(255,170,60,.16);color:#b26b00;font-size:11px;line-height:1.5;word-break:break-all}',
       '.meme-picker .mp-seedbar .mp-ok{color:var(--dsw-alias-brand-primary)}',
       '.meme-picker .mp-empty{color:var(--dsw-alias-label-secondary);text-align:center;padding:28px 0}',
       // [patch-dsh-meme-glass] 表情包弹层 = 与输入框同款玻璃背景板(配方抄 dsh-plugin-wallpaper-engine):
@@ -1463,6 +1485,8 @@ window.__ModuleLoader__.load({
       const [seedMode, setSeedMode] = React.useState(false)
       const [picked, setPicked] = React.useState([]) // [{path,url,caption,tag}]，数组顺序 = 勾选顺序
       const [seedNote, setSeedNote] = React.useState('')
+      // [patch-dsh-meme-diag] 点图没反应时的现场取证：把这一格用到的东西摆到面板上给用户念。
+      const [diag, setDiag] = React.useState('')
 
       React.useEffect(() => { setMemeLimit(72) }, [memeQuery, packId]) // [patch-dsh-meme-window] 换词/换库从头铺
 
@@ -1567,7 +1591,7 @@ window.__ModuleLoader__.load({
           el.dispatchEvent(new Event('input', { bubbles: true }))
           return true
         }
-        el.focus()
+        el.focus() // execCommand('insertText') 只对获得焦点的可编辑节点生效，漏了这步会静默失败
         const sel = window.getSelection()
         const range = document.createRange()
         range.selectNodeContents(el)
@@ -1623,24 +1647,70 @@ window.__ModuleLoader__.load({
       // 点击:发 [表情: 描述] 文本,前端按描述配图。
       const send = async (m) => {
         if (!m) return
-        // 纯文本:[表情: 描述] —— 模型只看到文字;前端按描述配图。
-        const trySubmit = () => {
-          try { if (actions && actions.submit) { actions.submit(); return true } } catch (e) {}
-          return submitViaEditor(editorEl()) // [patch-dsh-meme-dominsert]
+        // [patch-dsh-meme-diag] 独立点击计数（存 localStorage，重启也在）：
+        // 用户报告位时，这个数就能区分「处理器压根没被调用」和「调用了但后面没走通」。
+        let n = 0
+        try { n = (parseInt(localStorage.getItem('dshGengtuClickN') || '0', 10) || 0) + 1; localStorage.setItem('dshGengtuClickN', String(n)) } catch (e) {}
+        try { setDiag('点到了(第' + n + '次)，正在看写哪儿…') } catch (e) {}
+        try {
+          await sendInner(m)
+        } catch (err) {
+          // [patch-dsh-meme-diag] 抛到这儿就是"点了完全没反应"的真身，别让它无声无息
+          try { setDiag('点图抛错: ' + String((err && err.message) || err).slice(0, 120)) } catch (e) {}
+          console.error('[dsh-gengtu] 点图失败', err)
         }
+      }
+      const sendInner = async (m) => {
         const desc = (m.caption || m.keywords || m.tag || '表情包').slice(0, 80)
         // [patch-dsh-meme-pickmap] 记住"用户点的这张" —— 点谁发谁，不再依赖模糊匹配
         try { if (m.url) memePickMap.set(String(m.caption || desc).trim(), String(m.url)) } catch (e) {}
         // [patch-dsh-meme-pincode] ② 码：把图库行的稳定码塞进标记后缀，用户点谁就是谁
         // （同一条 caption 挂多张图时，描述本身分辨不出来，码可以）。
-        const code = memeCodeFromRow(m)
+        // [patch-dsh-meme-defensive] 取码失败只许丢码，绝不许拖垮整个发送：
+        // 没码顶多是「模型按描述配图」，抛出去就是「点了一点反应都没有」。
+        let code = ''
+        try { code = memeCodeFromRow(m) } catch (e) { code = '' }
         const text = '[表情: ' + desc + ']' + (code ? ' ·' + code : '')
-        // 已经有草稿就接在后面;DOM 兜底那条路会自己把现有文字读出来,所以这里只传标记本身
-        const cur = inputState && typeof inputState.draft === 'string' ? inputState.draft : ''
+        // 草稿现状：只有**真的读到**宿主状态才算数。
+        // [patch-dsh-meme-dominsert] 拿不到 useInput 时 inputState 是 null ——
+        // 那时若照着空串去调 actions.setDraft(text)，等于把草稿整个换成我们这句；
+        // 更糟的是宿主若把「状态快照为空」当成「草稿为空」，就会把刚写进去的又清掉，
+        // 表现就是用户看到的「点了没反应、框里一个字都没多」。所以这时一律改走 DOM 那条路。
+        const haveState = !!(inputState && typeof inputState.draft === 'string')
+        const cur = haveState ? inputState.draft : ''
+        const dataFrom = haveState ? 'host' : 'ledger'
+        if (!haveState) {
+          try {
+            const g = typeof props.getConversation === 'function' ? props.getConversation() : null
+            const st = g && typeof g.get === 'function' ? g.get() : null
+            if (st && typeof st.draft === 'string') dataFrom = 'conversation:' + String(st.draft).length
+          } catch (e) { dataFrom = 'ledger(取会话抛错)' }
+        }
         let wrote = false
-        try { if (actions && actions.setDraft) { actions.setDraft(cur.trim() ? cur + '\n' + text : text); wrote = true } } catch (e) {}
-        if (!wrote) wrote = insertToEditor(text) // [patch-dsh-meme-dominsert] 插槽没给 setDraft 就自己往输入框打
-        trySubmit() // [patch-dsh-meme-dominsert] 走输入框本身提交,不依赖插槽 prop
+        let how = ''
+        if (haveState) {
+          try { if (actions && actions.setDraft) { actions.setDraft(cur.trim() ? cur + '\n' + text : text); wrote = true; how = 'setDraft' } } catch (e) { how = 'setDraft 抛错: ' + (e && e.message) }
+        }
+        // DOM 兜底：插槽没给句柄、或拿不到草稿状态时，自己戳真输入框（会自己读现有文字接在后面）
+        if (!wrote) {
+          wrote = insertToEditor(text)
+          how = wrote ? 'DOM 写入' : (how ? how + ' / DOM 也没找到输入框' : 'DOM 也没找到输入框')
+        }
+        const ed = editorEl()
+        if (!ed) how += ' / 认不出输入框'
+        else if (ed.className) how += ' / 框类=' + String(ed.className).split(/\s+/)[0].slice(0, 22)
+        const acts = (actions && actions.setDraft ? 's' : '-') + (actions && actions.submit ? 'b' : '-') + (actions && actions.insertText ? 'i' : '-')
+        // 提交：句柄可用就用它（它会读宿主自己的草稿状态）；DOM 写入这条路等一帧再提，
+        // 免得宿主还没把刚打进去的文字收进状态就被提交掉。
+        const doSubmit = () => {
+          let sub = 'no-actions'
+          try { if (actions && actions.submit) { actions.submit(); sub = 'actions.submit' } } catch (e) { sub = 'submit 抛错: ' + (e && e.message) }
+          if (sub !== 'actions.submit') sub = submitViaEditor(ed) ? '按钮/回车' : '没找到提交按钮'
+          try { setDiag('写:' + how + ' | 数据:' + dataFrom + ' | 句柄:' + acts + ' | 提:' + sub + ' | 图:' + (m.url ? '有' : '无')) } catch (e) {}
+        }
+        if (wrote && haveState) doSubmit()
+        else if (typeof setTimeout === 'function') setTimeout(doSubmit, 90)
+        else doSubmit()
         if (!wrote) console.warn('[dsh-gengtu] 没能把表情标记写进输入框：找不到输入框元素')
         store.set(false)
       }
@@ -1712,6 +1782,7 @@ window.__ModuleLoader__.load({
             type: 'button', className: 'mp-tag' + (seedMode ? ' on' : ''), title: '挑选模式：点图只勾选、不发出去（用来攒随包底图）',
             onClick: () => { setSeedMode(!seedMode); setSeedNote('') },
           }, seedMode ? '挑选中 (' + picked.length + ')' : '挑选'),
+          diag ? h('span', { className: 'mp-diag' }, diag) : null,
           h('span', { className: 'mp-count' }, String(windowedMemes.length) + '/' + String(shownMemes.length) + (shownMemes.length < memes.length ? ' 共' + String(memes.length) : '')),
         ),
         seedMode ? h('div', { className: 'mp-seedbar' },
@@ -1924,8 +1995,9 @@ window.__ModuleLoader__.load({
         const loose = looseCaption(raw)
         if (loose) map.set(loose, url)
       }
-      // [patch-dsh-meme-pickmap] 选择器点过的图：caption → url，精确优先
-      const memePickMap = new Map()
+      // [patch-dsh-meme-pickmap] 点过的图：caption → url，精确优先
+      // ⚠️ 提到 factory 顶层（原来在 apply() 里）——MemeBoard 定义在 apply() 之前，
+      // 放里面点图时就是 ReferenceError: memePickMap is not defined（静默死在 try 里）。
       const findMemeUrl = (desc) => {
         const pinned = memePickMap.get(String(desc).trim())
         if (pinned) return pinned
@@ -1936,20 +2008,6 @@ window.__ModuleLoader__.load({
         const raw = String((hit && hit[1]) || '')
         if (!/^\[m:/i.test(String((hit && hit[0]) || ''))) return raw
         return raw.replace(/^[0-9a-z]{3,12}[\s:：_-]*/i, '').trim() || raw
-      }
-      // [patch-dsh-meme-pincode] 行尾的稳定码：`·c1a2b3`（keywords 里，由 _plugin_work\add-meme-codes.mjs
-      // 写入，算法 = 'c' + sha1(path).slice(0,6)）。注意不是 [m:…] 那种短码：
-      // [m:…] 是 token 本身的另一种写法，这个是「挂在标记后面的身份后缀」。
-      // ⚠️ `{5,6}` 不是笔误：V8（Node 24 / Chrome 桌面端实测）在「字符类 + 精确量词」上有个
-      // 可复现的怪癖 —— `c[0-9a-f]{6}` 匹配 'c0ffee' 返回 **false**（`{5}`、`{1,6}`、`{6,7}`
-      // 都正常，`c[a-z]{6}` 也正常，就 `[0-9a-f]` 这一类 + `{6}` 不行）。写法换成区间量词
-      // 立刻正常，所以统一用 `{5,6}`：既躲开这个坑，又向后兼容 5 位老码。
-      const MEME_CODE_RE = /·(c[0-9a-f]{5,6})(?!\w)/ // 用在 keywords 上，取最后一个
-      const memeCodeFromRow = (row) => {
-        const kw = String((row && row.keywords) || '')
-        const found = kw.match(new RegExp(MEME_CODE_RE.source, 'g'))
-        if (!found || !found.length) return ''
-        return found[found.length - 1].slice(1)
       }
       // [patch-dsh-meme-pincode] 码 → URL。优先级：① 标记里的 URL（模型抄了完整 URL）
       // ② 标记后面的稳定码 ③ [m:xxxx] 短码 ④ 描述匹配（老数据兜底，且只在前三者都没有时用）。
