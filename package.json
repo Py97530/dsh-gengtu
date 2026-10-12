@@ -1,6 +1,6 @@
 {
   "name": "dsh-gengtu",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DeepSeek Harness 梗图/表情包插件:本地图库 + 情绪与关键词搜图 + 中文抽象梗图分发(dsh-meme 的二次开发,MIT)。",
   "description.en": "Meme/sticker plugin for DeepSeek Harness: local pack library, emotion & keyword search, Chinese abstract-meme delivery.",
   "repository": {

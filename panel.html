@@ -85,6 +85,25 @@ function notice(msg, kind) {
 // [patch-dsh-meme-auth 2026-10-12] 服务端现在要求来源头 + 高危 op 令牌；面板是 DSH 同源页面，
 // 令牌由 tapIndex 注入成 window.__DSH_MEME_TOKEN__。以前这两个 fetch 什么都不带，靠的是
 // update/delete 恰好不在高危名单里——那条路已经堵上了。
+// [patch-dsh-gengtu-tokenfetch] 令牌兜底(2026-10-12):tapIndex 注入在桌面端不生效,
+// 面板页自己向 /dsh-memes-token 取一次;取不到就照旧(不报错、不阻塞页面)。
+let memeTokenPending = null
+function ensureMemeToken() {
+  if (window.__DSH_MEME_TOKEN__) return Promise.resolve(window.__DSH_MEME_TOKEN__)
+  if (!memeTokenPending) {
+    memeTokenPending = fetch('/dsh-memes-token', { headers: { 'x-dsh-meme': '1' } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && data.token) { window.__DSH_MEME_TOKEN__ = String(data.token); return window.__DSH_MEME_TOKEN__ }
+        memeTokenPending = null
+        return ''
+      })
+      .catch(() => { memeTokenPending = null; return '' })
+  }
+  return memeTokenPending
+}
+ensureMemeToken()
+
 function memeHeaders() {
   const h = { 'x-dsh-meme': '1' }
   if (window.__DSH_MEME_TOKEN__) h['x-dsh-meme-token'] = window.__DSH_MEME_TOKEN__
@@ -98,6 +117,7 @@ async function apiGet(params) {
   return res.json()
 }
 async function apiPost(payload) {
+  await ensureMemeToken() // [patch-dsh-gengtu-tokenfetch] 高危 op 前确保令牌在手
   const res = await fetch('/dsh-memes-api', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...memeHeaders() },

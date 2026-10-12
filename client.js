@@ -151,6 +151,30 @@ window.__ModuleLoader__.load({
     }
     const tagZh = (t) => TAG_ZH[t] || t
 
+    // [patch-dsh-gengtu-tokenfetch] 令牌兜底。2026-10-12 实测:tapIndex 注入在桌面端不生效,
+    // 页面拿不到 window.__DSH_MEME_TOKEN__ ⇒ 所有高风险 op(upload/delete/update/recognize)一律 403。
+    // 改成页面自己向 /dsh-memes-token 取一次。只加不减:注入成功就用注入的;取不到就维持原样
+    // —— 不抛错、不弹窗、不挡任何现有功能(取不到时只是高危 op 仍然 403,跟修复前一样)。
+    let memeTokenPending = null
+    function ensureMemeToken() {
+      if (window.__DSH_MEME_TOKEN__) return Promise.resolve(window.__DSH_MEME_TOKEN__)
+      if (!memeTokenPending) {
+        memeTokenPending = fetch('/dsh-memes-token', { headers: { 'x-dsh-meme': '1' } })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (data && data.token) {
+              window.__DSH_MEME_TOKEN__ = String(data.token)
+              return window.__DSH_MEME_TOKEN__
+            }
+            memeTokenPending = null // 没拿到就允许下次再试,别把失败钉死
+            return ''
+          })
+          .catch(() => { memeTokenPending = null; return '' })
+      }
+      return memeTokenPending
+    }
+    ensureMemeToken() // 页面一加载就先取,别等用户点了按钮才现取
+
     // [patch-dsh-meme-auth] 页面对本插件 API 的每个请求都得带来源校验头。
     // 关键:同源 GET 浏览器不发 Origin,只发 POST 那种才带 —— 所以 GET 也必须带头,
     // 否则宿主按"缺 Origin 且无 x-dsh-meme"拒掉(403),表现就是图库列表/搜索/发现页全空。
@@ -169,6 +193,7 @@ window.__ModuleLoader__.load({
       return (await fetch('/dsh-memes-api?' + qs.toString(), { headers: memeApiHeaders() })).json()
     }
     async function apiPost(payload) {
+      await ensureMemeToken() // [patch-dsh-gengtu-tokenfetch] 高危 op 前确保令牌在手
       return (await fetch('/dsh-memes-api', {
         method: 'POST',
         headers: memeApiHeaders({ 'Content-Type': 'application/json' }),
@@ -606,6 +631,10 @@ window.__ModuleLoader__.load({
       const [upFile, setUpFile] = React.useState(null)
       const [upData64, setUpData64] = React.useState('')
       const [upPreview, setUpPreview] = React.useState('')
+      // [patch-dsh-gengtu-upnotice] 上传弹窗自己的提示位。以前 AI 识别的结果/错误都写进
+      // 面板级的 setNotice,而那行渲染在弹窗外面 —— 弹窗是全屏遮罩,一开就把提示盖住,
+      // 用户看到的就是「点了没反应,啥也不弹」。
+      const [upNotice, setUpNotice] = React.useState('')
       const fileRef = React.useRef(null)
       const importFileRef = React.useRef(null)
       const onImportPack = (ev) => {
@@ -693,28 +722,38 @@ window.__ModuleLoader__.load({
         setUpTag('')
         setUpCaption('')
         setUpKeywords('')
+        setUpNotice('') // [patch-dsh-gengtu-upnotice]
         const reader = new FileReader()
         reader.onload = () => setUpData64(String(reader.result || '').split(',')[1] || '')
         reader.readAsDataURL(file)
       }
 
       // AI 识别:上传前先让模型看图,自动填分类/描述/关键词;失败不阻塞手动填写
+      // [patch-dsh-gengtu-upnotice] 全部反馈改走 setUpNotice(弹窗内可见),不再写面板那行。
       const onRecognize = async () => {
-        if (!upFile) { setNotice('先选择图片'); return }
-        if (!upData64) { setNotice('图片还没读好,稍等片刻再试'); return }
+        if (!upFile) { setUpNotice('先选择图片'); return }
+        if (!upData64) { setUpNotice('图片还没读好,稍等片刻再试'); return }
+        // 令牌是高风险 op 的门票(recognize 在 HIGH_RISK_OPS 里);先主动取一次再判断,
+        // 拿不到就明说,别让用户对着一个静默失败的按钮猜。
+        await ensureMemeToken() // [patch-dsh-gengtu-tokenfetch]
+        if (!window.__DSH_MEME_TOKEN__) {
+          setUpNotice('AI 识别失败: 页面没拿到插件令牌(window.__DSH_MEME_TOKEN__ 为空),刷新页面后重试')
+          return
+        }
         setRecognizing(true)
+        setUpNotice('识别中…正在让模型看图')
         try {
           const res = await apiPost({ op: 'recognize', fileName: upFile.name, dataBase64: upData64 })
           if (res && res.ok) {
             setUpTag(res.tag || '')
             setUpCaption(res.caption || '')
             setUpKeywords(res.keywords || '')
-            setNotice('AI 已识别: [' + (res.tag || '?') + '] ' + (res.caption || ''))
+            setUpNotice('AI 已识别: [' + (res.tag || '?') + '] ' + (res.caption || ''))
           } else {
-            setNotice('AI 识别失败: ' + (res && res.error || '未知错误'))
+            setUpNotice('AI 识别失败: ' + (res && res.error || '未知错误'))
           }
         } catch (error) {
-          setNotice('AI 识别失败: ' + (error && error.message ? error.message : String(error)))
+          setUpNotice('AI 识别失败: ' + (error && error.message ? error.message : String(error)))
         }
         setRecognizing(false)
       }
@@ -1079,6 +1118,8 @@ window.__ModuleLoader__.load({
             upFile ? h('div', { className: 'row', style: { width: '100%' } },
               h('button', { className: 'btn-primary', onClick: onRecognize, disabled: recognizing }, recognizing ? 'AI 识别中…' : 'AI 识别'),
             ) : null,
+            // [patch-dsh-gengtu-upnotice] 结果/失败原因必须落在弹窗里 —— 面板那行 notice 在遮罩外面。
+            upNotice ? h('div', { className: 'notice' }, upNotice) : null,
             h('div', { className: 'field' },
               h('label', null, '分类(必填)'),
               h('div', { className: 'row', style: { width: '100%' } },

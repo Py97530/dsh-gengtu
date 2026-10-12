@@ -353,3 +353,84 @@ caption 撞车 10 组 58 张 / 磁盘 978 张 = 索引 978 行 / 服务端候选
 按语义化版本，带 `feat` 就该动 minor —— 升成 `0.2.0`，打 tag `v0.2.0`。
 旧 tag `v0.1.0` 留着不动：它指的就是 `cf60b2b` 那个「20 项改动并入源码」的初版。
 
+## 2026-10-12 上传弹窗：AI 识别的反馈全被遮罩盖住（「点了没反应，啥也不弹」）
+
+用户报：上传表情包弹窗里点「AI 识别」，点了没反应、什么都不弹。
+
+**病根不在识图本身。** 后端整条链路是好的 —— 活宿主实测 `op:'recognize'`（`tools/_diag-recognize.mjs`）：
+1.6 秒返回 `{"ok":true,"tag":"happy","caption":"可爱的蓝发鲸鱼娘女仆，睁着大眼睛开心张嘴笑，萌态十足。","keywords":"鲸鱼娘 女仆 Q版 可爱 开心"}`。
+
+问题在**提示渲染的位置**：`client.js:996` 那行 `notice ? h('div', { className: 'notice' }, notice) : null`
+渲染在**面板主体**上，而上传弹窗是**全屏遮罩**（`meme-modal-mask`）—— 弹窗一开，那行通知就被盖在底下。
+于是不管识别成功还是失败，用户在弹窗里**什么都看不到**；识别失败时三个框也不会被填，
+观感就是「点了没反应，啥也不弹」。
+
+改法（`[patch-dsh-gengtu-upnotice]`，只动「上传弹窗 + AI 识别」这一条线，`client.js` 四处）：
+
+- 新增弹窗自己的状态 `upNotice` / `setUpNotice`（跟 `upFile` / `upData64` 放在一起）；
+- `onRecognize()` 里所有反馈从面板级 `setNotice` 改成 `setUpNotice`；
+- 进函数第一句先报 `识别中…正在让模型看图` —— 这样「点到底点上没有」本身也可见；
+- 令牌兜底：`window.__DSH_MEME_TOKEN__` 为空时直接明说 —— `recognize` 在 `HIGH_RISK_OPS` 里，
+  没有令牌必然 403，而以前那个 403 只会写进那行**看不见**的 notice；
+- 弹窗里按钮下面加一行 `upNotice ? h('div', { className: 'notice' }, upNotice) : null`；
+- 换图时（`onPickFile`）顺手清空 `upNotice`。
+
+验证：`node --check client.js` 通过；七个测试文件全绿（basic 6 + 1 skip / match 4 / pincode 5 /
+dominsert 7 / scope-order 10 / notext 16 / decorate 4）；`git diff --stat` = 1 file changed, +20/−5
+（除 client.js 外一个字没动）。
+
+真机验收：界面 **Ctrl+R**（客户端半边，不用重启桌面端）→ 上传弹窗选图 → 点「AI 识别」→
+弹窗里应出现 `识别中…`，随后是 `AI 已识别: [happy] …`，或者一句明确的失败原因。
+
+**2026-10-12 实测**：Ctrl+R 后弹出来的正是那句明确的失败原因 ——
+`AI 识别失败: 页面没拿到插件令牌(window.__DSH_MEME_TOKEN__ 为空),刷新页面后重试`。
+这条兜底检查把真病根揪出来了：**问题不在识图，在令牌压根没注进页面**，见下一节。
+
+## 2026-10-12 令牌注入兜底：桌面端 `tapIndex` 静默失效，页面自己取一次（`[patch-dsh-gengtu-tokenfetch]`）
+
+**病根**：`window.__DSH_MEME_TOKEN__` 从来没进过页面。
+注入挂在 `index.js` 的 `webServer.tapIndex((html) => html.replace('</head>', …))` 上，
+而 `String.prototype.replace` **匹配不到不会抛错** —— 紧跟的 `catch` 只 `console.error`，静默失败。
+
+（把 `…\resources\app.asar` 解开看过：`tapIndex(transform) { this.indexTaps.push(transform); … }`
+实现没变、签名也对；但它的文档写明这条链由「SPA dist 服务器渲染 index 时」触发 —— 桌面端这条路没走到。）
+
+**后果**（比「AI 识图坏了」大得多）：`HIGH_RISK_OPS` 里的 op 全部 403 ——
+`upload` / `update` / `delete` / `deleteTag` / `recognize` / `importMemePack` / `setMemeRoot` …，
+表现就是「点了没反应」；**同一个注入点还负责「聊天里表情包显示成小图」的 CSS**，所以那也一起没了。
+
+**改法（只加不减，原 `tapIndex` 一个字没动）**：
+
+1. `index.js`：新增只读路由 `GET /dsh-memes-token`，走 `assertLocalRequest`，返回 `{ ok: true, token }`。
+2. `client.js`：新增 `ensureMemeToken()` —— 注进去了就用注入的；为空才 fetch 一次并写回
+   `window.__DSH_MEME_TOKEN__`；**取不到不抛错、不弹窗**，只是维持原状（高危 op 仍 403，与修复前一致）。
+   页面加载即调用一次，`apiPost()` 前再 `await` 一次兜底。
+3. `panel.html`：同样的 `ensureMemeToken()` + `apiPost()` 前 await（面板页不引 `client.js`，得自带一份）。
+4. `onRecognize()`：原令牌检查前加 `await ensureMemeToken()`，避免「刚加载完就点」的假失败。
+
+**为什么安全级别没变**：`/dsh-memes-token` 与其余 API 走**同一道门**（`assertLocalRequest`：回环 +
+同源，或带 `x-dsh-meme` 头），而本机进程本来就直接读得到 `~/.dsh/dsh-expression.token`。没有新增暴露面。
+
+**验证**：`node --check` index.js / client.js 均通过；七个测试文件全绿（basic 6 + 1 skip / scope-order 10 /
+decorate 4 / dominsert 7 / match 4 / notext 16 / pincode 5）。探针 `tools/_diag-token.mjs` 打三条：
+无头 403 / 带 `x-dsh-meme` 200 + token / 跨站 Origin 403。
+
+**真机验收**：**重启桌面端**（新路由在宿主半边 `index.js` 里）+ 界面 Ctrl+R → 上传弹窗点「AI 识别」，
+应能出标签和描述；上传、删除、改标签也应一并恢复。
+
+**2026-10-12 实测**：重启后探针 `tools/_diag-token.mjs` 三条全对（无头 403 / 带 `x-dsh-meme` 200 + 40 字符
+token / 跨站 Origin 403），`tools/_diag-live.mjs` 原有接口体检全绿（978 行 / 977 带码 / 图片路由 200 /
+该拦的全拦住）。**注意：关开插件不够** —— DSH 的关/开只重跑 `apply()`，不会重读已被 ESM 缓存住的
+`index.js`，必须重启桌面端进程新路由才存在（第一次探针返回 404 就是踩了这个）。
+
+## 2026-10-12 版本号 0.2.0 → 0.2.1
+
+纯修复版本：桌面端 `tapIndex` 静默失效 ⇒ 高风险 op 全 403（上传 / AI 识图 / 删除 / 改标签 / 导图库包）。
+没有新功能、没有行为变更，按语义化版本只能走 patch。
+
+- `[patch-dsh-gengtu-tokenfetch]`：`index.js` 新增只读路由 `/dsh-memes-token`，`client.js` 与
+  `panel.html` 各自带 `ensureMemeToken()` 兜底（见上一节）。
+- **已知且故意不修的另一半**：聊天里表情包的小图 CSS 同样挂在死掉的 `tapIndex` 上。用户 2026-10-12
+  明确表示**不修** —— 160px 的梗图看不清（「在小了就看不清了」），保留原图尺寸。将来若有人把这当成
+  bug 顺手"修好"，等于把用户的图全变成小图，属于**倒退**，先问再说。
+

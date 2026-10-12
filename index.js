@@ -1706,6 +1706,27 @@ export function apply(ctx, config) {
       },
     }), 'dsh-expression: /memes-panel 管理面板')
 
+    // [patch-dsh-gengtu-tokenfetch] 令牌兜底通道:页面自己来取一次。
+    // 2026-10-12 实测:桌面端下 tapIndex 静默失效(html.replace('</head>') 匹配不上也不抛错,
+    // 下面那个 catch 只打日志),window.__DSH_MEME_TOKEN__ 一直是空 ⇒ 上传/删除/改标签/
+    // AI 识图这些高风险 op 全被 403 挡掉,而页面看上去只是"点了没反应"。
+    // 安全性跟 tapIndex 注入等价:同样过 assertLocalRequest(回环 + 同源,或带 x-dsh-meme 头),
+    // 而本机进程本来就读得到 ~/.dsh/dsh-expression.token 那个文件 —— 不新增暴露面。
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: '/dsh-memes-token',
+      handler(req, res) {
+        try {
+          assertLocalRequest(req)
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          res.end(JSON.stringify({ ok: true, token: apiToken }))
+        } catch (error) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: false, error: '拒绝: ' + (error instanceof Error ? error.message : String(error)) }))
+        }
+      },
+    }), 'dsh-expression: /dsh-memes-token 令牌兜底')
+
     // 对话里表情包小图展示:只限制 /dsh-memes 图片,避免大图贴脸,不影响其他 UI。
     // 选择器必须用 src*= 子串匹配:send_meme 返回的是绝对 URL
     // (http://host:port/dsh-memes/...),src^= 前缀匹配只对相对路径生效,
