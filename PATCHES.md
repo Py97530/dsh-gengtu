@@ -42,6 +42,7 @@
 | client.js | `[patch-dsh-meme-dominsert]` | 点图后的兜底不依赖插槽 prop：`actions.setDraft` 缺席时直接把 `[表情: 描述] ·码` 打进输入框（contenteditable 走 `execCommand('insertText')`、textarea/input 走原型原生 value setter + `input` 事件）；提交按 插槽 `submit` → 输入框那一带的发送按钮（按 `aria-label`/`title`/`data-testid` 认）→ 回车 依次试；认输入框时排除消息内容区 | 用户报：点了表情包**输入框里什么都不出来**。DSH 有的版本不给 `conversation.input.overlay` 这个插槽发 `inputActions`，`actions.setDraft`/`actions.submit` 都是 undefined，而调用点在 try/catch 里被静默吞掉 |
 | client.js | `[patch-dsh-meme-defensive]` | `memeCodeFromRow` / `MEME_CODE_RE` / `memePickMap` 三样提到 factory 顶层（`apply()` 里那份删掉）；取码包 `try`（失败只丢码、不许拖垮发送）；草稿现状改成「只有**真读到**宿主状态才认」（`haveState`），拿不到就一律走 DOM 那条路，免得拿 null 快照去 `setDraft` 反把草稿清空 | 用户 m00585 念出的现场行是 `点图抛错: memeCodeFromRow is not defined` —— 点图处理器第一句就 `ReferenceError`，抛在写草稿/提交**之前**，所以表现是「点了完全没反应」；前几轮全猜错了方向（插槽、鉴权、旧代码） |
 | client.js | `[patch-dsh-meme-diag]` | `send()` 拆成外壳 + `sendInner()`，外壳 `catch` 把异常写到图库面板顶上的取证行（`.mp-diag`，CSS 在样式表里），并记 `localStorage.dshGengtuClickN` 点击数；取证行内容 = `写:how / 数据:from / 句柄:sbi / 提:sub / 图:有` | 「点了没反应」时前端一点线索都不给，只能靠猜；有这一行用户念一句就能定位（这次就是这么破的案）。正常工作时这行不显示 |
+| client.js | `[patch-dsh-meme-notext]` | 注释原文的隐藏改成**按文本节点摘**，不再押 DOM 形状：这条消息里已经有 `img[data-meme-img]` 时，把同一行里还看得见的 `[表情: …] ·码` 文本节点用 `<span data-meme-hidden>` 裹住（ghost 里那份原文保留）；CSS 另补两条父级/气泡级判据（`:has()`），「配图中」兜底从 4s 收到 0.25s | 用户报：「图不立马出来，先出现一串给 ai 的注释」，图出来了注释还杵在气泡里、**能选中能复制**。前两版都押在形状上：`~` 要求注释元素是图片**兄弟**、`:has`+`[data-meme-bare]` 要求气泡里没有别的可见文本 —— 宿主一换裹法就全漏。这版只认「这行配到图了」+「这段文本是标记」，层级无所谓 |
 
 ## 高风险操作令牌
 

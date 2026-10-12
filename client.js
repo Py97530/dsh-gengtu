@@ -2101,6 +2101,49 @@ window.__ModuleLoader__.load({
         }
         return out
       }
+      // [patch-dsh-meme-notext 2026-10-12] 把「已经配到图的那些 [表情: 描述] ·码 原文」从可见
+      // 文本里摘掉——**不再假设它长在哪一层**。用户报：图是出来了，可那串给模型看的注释还杵在
+      // 气泡里（他能选中、能复制）。前两版判据都押在 DOM 形状上：第一版要求注释元素是 img 的
+      // **兄弟**（`~`），第二版押「气泡里没有任何可见文本」（`:has` + `[data-meme-bare]`），
+      // 宿主换个裹法就又漏了。这版换成按**文本节点**动手：只要这条消息里已经有配好图
+      // （img[data-meme-img]），就把同一行里还看得见的 [表情: …] 文本节点本身用
+      // <span data-meme-hidden> 裹住（display:none）——span 是不是 img 的兄弟、爷爷是谁，
+      // 全都无所谓。ghost 里那份原文照旧保留，别的插件比对 textContent 仍能逐字对上。
+      // 同一节点只裹一次（裹完它就不在可见树里了），所以重复调用是幂等的。
+      const hideMemeRawText = () => {
+        if (!document.querySelector('img[data-meme-img],img[data-meme-hide-raw]')) return
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\[(?:表情|m):/.test(n.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) })
+        const found = []
+        let cur
+        while ((cur = walker.nextNode())) found.push(cur)
+        for (const node of found) {
+          const parent = node.parentElement
+          if (!parent) continue
+          if (parent.closest('[data-meme-hidden]')) continue // 我们自己那份 ghost，留着
+          if (parent.closest('input,textarea,[contenteditable="true"]')) continue
+          const row = parent.closest('[data-chat-flow],[data-chat-flow-key],[data-time-hover-root]')
+          if (!row || !row.querySelector('img[data-meme-img]')) continue // 这条消息真把图配上了才摘
+          const text = node.nodeValue || ''
+          const re = /\[(?:表情|m):[^\]]*\](?:\s*·c[0-9a-f]{5,6})?(?:\((https?:\/\/[^\s)]+)\))?/g
+          let at = 0
+          let hit
+          const frag = document.createDocumentFragment()
+          let wrapped = false
+          while ((hit = re.exec(text))) {
+            if (hit.index > at) frag.appendChild(document.createTextNode(text.slice(at, hit.index)))
+            const ghost = document.createElement('span')
+            ghost.setAttribute('data-meme-hidden', '1')
+            ghost.style.display = 'none'
+            ghost.textContent = hit[0]
+            frag.appendChild(ghost)
+            wrapped = true
+            at = hit.index + hit[0].length
+          }
+          if (!wrapped) continue
+          if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)))
+          node.parentNode.replaceChild(frag, node)
+        }
+      }
       // 流式渲染会覆盖我们的注入,同一个 [表情: x] 可能被装饰两次 → 同一消息行挂两张相同的图
       // (issue #22 第 3 条:刷新后稳态只剩一张,说明是竞态而不是双注入)。按「消息行 + 描述」
       // 幂等去重:没有重复时零副作用,所以每轮扫描完无脑跑一次就行。
@@ -2225,10 +2268,21 @@ installMemeZoom();
   if (document.getElementById('dsh-meme-noflip-css')) return
   const st = document.createElement('style')
   st.id = 'dsh-meme-noflip-css'
+  // [patch-dsh-meme-notext 2026-10-12] 用户又报「点了表情包，图不立马出来，先出现一串给 ai 的
+  // 注释」——上一版的 `img[data-meme-hide-raw]~span` 要求「注释元素是 img 的**兄弟**」。可落点
+  // 补丁把 img 提到气泡层之后，注释文本往往被宿主缠在 <p>/<span> 里（img 和它同父不同层），
+  // `~` 一个都匹配不上 → 注释就一直晾着。这里补两条「父级/祖先级」判据：
+  //   ① img 同一层里还有别的元素（那个多半就是装注释的 p/span）→ 藏掉（不碰 ghost、不碰 img）；
+  //   ② 整个气泡里只要有 img[data-meme-hide-raw]、且没有任何**可见文本**（!textWithoutGhosts），
+  //      就把这层里所有 span/div/p 收掉——正好匹配落点补丁那条「气泡只被掏走了文本节点」的形状。
   st.textContent = [
     'img[data-meme-hide-raw]~span:not([data-meme-hidden]),img[data-meme-hide-raw]~div:not([data-meme-hidden]),img[data-meme-hide-raw]~p:not([data-meme-hidden]){display:none!important}',
-    // 4s 兜底：动画结束状态是「显示」——配图一直没回来也不会留一个空气泡。
-    '[data-meme-pending] span:not([data-meme-hidden]){display:none!important;animation:dsh-meme-noflip-show 4s step-end 1 forwards}',
+    'img[data-meme-hide-raw]~*:not([data-meme-hidden]):not(img):not([data-meme-img]){display:none!important}',
+    '[data-meme-bare]:has(img[data-meme-hide-raw]) span:not([data-meme-hidden]),[data-meme-bare]:has(img[data-meme-hide-raw]) div:not([data-meme-hidden]):not(:has([data-meme-img])),[data-meme-bare]:has(img[data-meme-hide-raw]) p:not([data-meme-hidden]){display:none!important}',
+    // 配图中：0.25s 兜底（原 4s）。结论早知道早好——图 200ms 内就回来了，等 4 秒没有意义；
+    // 真配不上时 250ms 后原文自己回来，气泡也不会空着。
+    '[data-meme-pending] span:not([data-meme-hidden]){display:none!important;animation:dsh-meme-noflip-show .25s step-end 1 forwards}',
+    '[data-meme-pending]:not(:has(img[data-meme-img])) p:not([data-meme-hidden]),[data-meme-pending]:not(:has(img[data-meme-img])) div:not([data-meme-hidden]){display:none!important;animation:dsh-meme-noflip-show .25s step-end 1 forwards}',
     '@keyframes dsh-meme-noflip-show{0%,99.9%{display:none}100%{display:inline}}',
   ].join('')
   document.head.appendChild(st)
@@ -2492,6 +2546,7 @@ const decorateMemeText = () => {
           loadMemeIndex(true)
         }
         dedupeMemeImages()
+        hideMemeRawText() // [patch-dsh-meme-notext] 图配上了就把注释原文摘出可见树
       }
       // 设置侧边栏「表情包」行的齿轮图标替换成笑脸(dsh navIcon 硬编码,不支持自定义)
       const decorateNavIcon = () => {
