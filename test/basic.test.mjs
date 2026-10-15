@@ -134,30 +134,68 @@ test('真·发布包能解开，且索引条数与图片数对得上（本地有
   }
 })
 
-test('图库模块：能就地建空库、能打开索引、路径不许越界', async () => {
+test('图库模块：首启铺自带种子图、能就地建库、路径不许越界', async () => {
   const memes = await import(pathToFileURL(path.join(ROOT, 'memes.js')).href)
+  const { createHash } = await import('node:crypto')
+  const { DatabaseSync } = await import('node:sqlite')
   const os = await import('node:os')
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-gengtu-lib-'))
   try {
-    // 包里不再自带图片（原来那 24 张原作者授权是 personal）⇒ 宿主首次启动必须能自己建出空库，
-    // 否则 MemesStore 缺索引抛错、apply 直接 return，表现就是「插件没装上」。
-    // [patch-dsh-meme-seed] 中间一度带过自己挑的 57 张底图，上架前撤掉了（版权）。
-    // 所以这里断言的是**空库**：索引建得出来、0 行、目录里没有残留图。
-    const root = memes.ensureLibrary(path.join(tmp, 'empty'))
+    // 第五刀（2026-10-15）：`seed/` 又回来了 —— 28 张他自己挑的示例底图。
+    // 所以这里断言的是**首启铺满**：索引建得出来、图真落到 memes/<tag>/ 下、码按新路径重算、
+    // 而且只种一次（用户删光之后重启不许再塞回来）。张数从 manifest 读，别写死 ——
+    // 他以后重挑几张图，这行不用跟着改。
+    const manifest = JSON.parse(read(path.join('seed', 'manifest.json')))
+    const want = manifest.items.length
+    assert.ok(want > 0, 'seed/manifest.json 里一张图都没有')
+
+    const root = memes.ensureLibrary(path.join(tmp, 'fresh'))
     assert.ok(fs.existsSync(path.join(root, 'index.db')), 'ensureLibrary 没建出索引: ' + root)
 
     const store = new memes.MemesStore(root)
     try {
       const listed = store.list()
-      assert.equal(listed.memes.length, 0, '包里不该带任何图，结果有 ' + listed.memes.length + ' 张')
+      assert.equal(listed.memes.length, want, '首启没铺满种子图: ' + listed.memes.length + ' / ' + want)
+      // 索引指向的文件必须真在磁盘上：少一张就是一格破图（历史事故是整屏都破）。
+      for (const m of listed.memes) {
+        assert.ok(fs.existsSync(path.join(root, m.path)), '索引指向的图不存在: ' + m.path)
+      }
+      // 码必须按「图库内相对路径」重算：照抄 manifest 里的旧码（那是在 seed/ 下算的）配不上任何一张图。
+      const one = listed.memes[0]
+      const code = 'c' + createHash('sha1').update(one.path).digest('hex').slice(0, 6)
+      assert.ok(String(one.keywords).includes('·' + code), '码没按图库内路径重算: ' + one.keywords)
+      assert.ok(fs.existsSync(path.join(root, '.seeded')), '铺完种子没打 .seeded 记号')
+
       // 注意 `tags` 回的是**插件认的 6 个情绪桶**（memes.js 里的固定列表），不是库里的实际分桶，
-      // 所以空库这里不是 0（早先断言 tags.length===0 是错的）。
+      // 所以这里不是空数组（早先断言 tags.length===0 是错的）。
       assert.deepEqual([...listed.tags].sort(), ['angry', 'confused', 'daily', 'happy', 'sad', 'shy'])
       assert.ok(Array.isArray(store.search('猫', 5).memes))
       assert.ok(memes.moodNames().length > 0)
       assert.throws(() => store.resolveStored('../../../etc/passwd'), /超出/)
     } finally {
       store.close()
+    }
+
+    // 再跑一遍不许翻倍 —— 用户每重启一次图库就变两倍的话最蠢。
+    memes.ensureLibrary(root)
+    const again = new memes.MemesStore(root)
+    try {
+      assert.equal(again.list().memes.length, want, '重复 ensureLibrary 把种子图铺了两遍')
+    } finally {
+      again.close()
+    }
+
+    // 老用户把图全删光之后重启：不许再塞回来（表还在 + `.seeded` 记号在 = 老库，不是新库）。
+    const raw = new DatabaseSync(path.join(root, 'index.db'))
+    raw.exec('DELETE FROM memes')
+    raw.close()
+    fs.rmSync(path.join(root, 'memes'), { recursive: true, force: true })
+    memes.ensureLibrary(root)
+    const emptied = new memes.MemesStore(root)
+    try {
+      assert.equal(emptied.list().memes.length, 0, '用户删光之后重启又被塞回种子图了')
+    } finally {
+      emptied.close()
     }
 
     // 没有自带包时默认库落在 <home>/.dsh/meme-packs/default，而且建得出来、打得开

@@ -110,6 +110,25 @@
    **空库断言**：索引建得出来、0 行、目录里没有残留图、`tags` 为空、`search()` 返回数组、
    越界路径仍然抛错 —— 保证「包里不带图」这条约定以后不会被误改回去。
 
+## 2026-10-15 第五刀：自带底图回来了（28 张，他自己挑的）
+
+1. **`seed/` 放回来**：28 张 + `manifest.json`。清单来自他自己的图库（`dev/seed-list.txt`，
+   他在面板「挑选」里勾的），走新写的 `node dev/build-seed.mjs --list dev/seed-list.txt --clear`
+   打包：图拷成 `seed-NNN.jpg`，`tag` / `caption` / `keywords` 从源库 `index.db` 抄，
+   `·cXXXXXX` 稳定码剥掉（换路径后码会变，插件导入时按 `memes/<tag>/<文件名>` 重算）。
+   合计 2.00 MB，情绪分布 angry×8 confused×7 happy×6 like×3 sad×2 speechless×2。
+2. `package.json` 的 `files` 补回 `"seed/"` —— 不加它 npm 包里根本打不进图（第四刀撤图时连同删了）。
+   版本 0.2.1 → 0.2.2。
+3. **插件代码一行没动**：`seedLibrary()` / `ensureLibrary()` 那套自第四刀起就完好，这次只是把"料"放回去。
+   ⚠️ 判据仍是「**空库**」：图库里已经有图（或有 `.seeded` 记号）的机器不会自动补种 ——
+   想让老用户也拿到，只能他自己删库重来或手动导入。
+4. 版权口径同步改了（根 README / `memes/README.md` / 仓库 About）：这 28 张是他本人挑的示例底图，
+   版权归原作者，收到下架要求就删。**第四刀撤那 57 张的理由（随包分发 ≠ 存在自己硬盘里斗图）
+   依然成立**，这次是他知情后的选择。
+5. 打标器偶尔会把图里印的日期 / 帖子标题一起抄进 caption（这次 `seed-002`、`seed-020` 中招），
+   `build-seed.mjs` 里加了 `cleanCaption()` 统一擦日期、另留 `CAPTION_FIX` 手改表。
+   ⚠️ **`CAPTION_FIX` 的键是 seed 文件名，靠清单顺序** —— 以后重挑图，编号一变就得跟着改。
+
 ## 2026-10-12 评审整改（三个人三份报告，全在这天落实）
 
 三份报告原文在 `_plugin_work\评审-架构线-2026-10-12.md`、`_plugin_work\安全线评审-dsh-gengtu.md`、

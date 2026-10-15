@@ -14,11 +14,20 @@ _plugin_work/
 *.tmp
 # 开发用挑选服务落下的清单(勾图勾出来的,不进仓库)
 dev/seed-pick.json
+# 种子库的对照图(自己看的,别进仓库 —— 图本身在 seed/ 里)
+dev/_seed-sheet.png
 
 # 用户自己的大图库绝不进仓库(版权 + 体积)
 memes/gengtu-*/
 memes/*-2026*/
 !memes/dafeiyu-001/
+
+# 图库整理(2026-10-15 清合集图)留下的一次性脚本与对照图,跟插件本体无关
+tools/_scan-collections.*
+tools/_purge-collections.mjs
+tools/_sheet.py
+tools/_sheet2.py
+tools/_sheets/
 
 .DS_Store
 Thumbs.db
