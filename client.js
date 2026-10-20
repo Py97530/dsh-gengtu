@@ -201,6 +201,32 @@ window.__ModuleLoader__.load({
       })).json()
     }
 
+    // [patch-dsh-gengtu-glass-alpha] 面板玻璃透明度:20~100,存本机,写进 --meme-glass-alpha。
+    // 聊天那边的 .meme-picker/.mp-hover 规则读这个变量(见 [patch-dsh-meme-glass]),所以这里
+    // 改完聊天里的面板立刻跟着变,不用刷新;设置页里另外放了个演示块实时显示效果。
+    // 读/写都裹 try:假 DOM 环境(单测)没有 localStorage / documentElement。
+    const GLASS_ALPHA_KEY = 'dshGengtuGlassAlpha'
+    const GLASS_ALPHA_DEFAULT = 100
+    const readGlassAlpha = () => {
+      try {
+        const n = parseInt(localStorage.getItem(GLASS_ALPHA_KEY) || '', 10)
+        if (Number.isFinite(n) && n >= 20 && n <= 100) return n
+      } catch (e) {}
+      return GLASS_ALPHA_DEFAULT
+    }
+    const applyGlassAlpha = (n) => {
+      try { document.documentElement.style.setProperty('--meme-glass-alpha', String(n) + '%')
+        // 越透越糊:面板背后就是聊天的深色底,"透"在纯色背景上几乎看不出来,
+        // "糊"才是肉眼能分辨的那一半。100% → 16px(与原值一致),20% → 约 36px。
+        document.documentElement.style.setProperty('--meme-glass-blur', (16 + (100 - n) * 0.25).toFixed(1) + 'px') } catch (e) {}
+    }
+    const writeGlassAlpha = (n) => {
+      applyGlassAlpha(n)
+      try { localStorage.setItem(GLASS_ALPHA_KEY, String(n)) } catch (e) {}
+    }
+    // 启动就应用一次:不然刷新之后变量没了,面板会退回 100%
+    applyGlassAlpha(readGlassAlpha())
+
     function MemePanel(props) {
       const ctx = props && props.ctx
       const h = React.createElement
@@ -241,6 +267,7 @@ window.__ModuleLoader__.load({
       const [packView, setPackView] = React.useState('') // 非空 = 进入该图库的表情包页(二级页,不是标签页)
       const [promptOn, setPromptOn] = React.useState(true)
       const [pluginVersion, setPluginVersion] = React.useState('')
+      const [glassAlpha, setGlassAlpha] = React.useState(() => readGlassAlpha()) // [patch-dsh-gengtu-glass-alpha]
       const applyRoot = (res) => {
         if (!res || !res.ok) return
         setMemeRoot(res.memeRoot || '')
@@ -1243,6 +1270,42 @@ window.__ModuleLoader__.load({
           h('span', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } },
             companionPrompt ? '已自定义' : '使用默认'),
         ),
+        // [patch-dsh-gengtu-glass-alpha] 面板玻璃透明度:一根滑杆 + 一个实时演示块。
+        // 设置页里没有表情包面板,光给滑杆看不见变化,所以旁边放块演示的。
+        h('div', { className: 'section-title' }, '面板玻璃'),
+        h('div', { className: 'row', style: { width: '100%', gap: 10 } },
+          h('input', {
+            type: 'range', min: 20, max: 100, step: 2,
+            value: glassAlpha,
+            title: '表情包面板背景的不透明度',
+            onChange: (e) => { const n = Number(e.target.value); setGlassAlpha(n); writeGlassAlpha(n) },
+            style: { flex: 1, minWidth: 140 },
+          }),
+          h('span', { style: { fontSize: 12, minWidth: 44, textAlign: 'right' } }, String(glassAlpha) + '%'),
+        ),
+        h('div', { className: 'row', style: { width: '100%', gap: 12, alignItems: 'center' } },
+          h('div', {
+            style: {
+              width: 132, height: 56, borderRadius: 10, flex: 'none', position: 'relative', overflow: 'hidden',
+              border: '1px solid var(--dsw-alias-border-l1)',
+              background: 'linear-gradient(135deg,#3b6ea5,#7c4dff 55%,#e0409a)',
+            },
+          },
+            h('div', {
+              style: {
+                position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 12, color: 'var(--dsw-alias-label-primary)',
+                // [patch-dsh-gengtu-glass-alpha] 演示块跟面板用同一条配方(壁纸引擎那张表),
+                // 不然滑杆拖起来跟真面板对不上号。
+                backgroundColor: 'color-mix(in srgb, color-mix(in srgb, var(--we-readability-base, var(--dsw-alias-bg-layer-1)) calc(var(--we-readability-floor, 0) * 100%), color-mix(in srgb, var(--we-surface-tint-light, #ffffff) calc(var(--we-glass-alpha, 0.5) * 100%), transparent) calc((1 - var(--we-readability-floor, 0)) * 100%)) ' + glassAlpha + '%, transparent)',
+              },
+            }, '表情包面板'),
+          ),
+          h('div', { style: { fontSize: 11, lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)' } },
+            '管的是聊天里弹出来的表情包面板(含悬浮预览)。数字越小越透,100% = 完全用底色。',
+            h('br'),
+            '拖动立刻生效、不用刷新;值存在本机,重开也在。'),
+        ),
 
         ) : null,
         rootNotice ? h('div', { className: 'notice' }, rootNotice) : null,
@@ -1428,10 +1491,22 @@ window.__ModuleLoader__.load({
       '.meme-picker .mp-diag{display:block;margin:4px 0 0;padding:3px 6px;border-radius:5px;background:rgba(255,170,60,.16);color:#b26b00;font-size:11px;line-height:1.5;word-break:break-all}',
       '.meme-picker .mp-seedbar .mp-ok{color:var(--dsw-alias-brand-primary)}',
       '.meme-picker .mp-empty{color:var(--dsw-alias-label-secondary);text-align:center;padding:28px 0}',
-      // [patch-dsh-meme-glass] 表情包弹层 = 与输入框同款玻璃背景板(配方抄 dsh-plugin-wallpaper-engine):
-      // 底色读输入框令牌 --dsw-specific-input-major(= 壁纸引擎改写后的玻璃色),釉面/模糊/阴影读 --we-*;
-      // 整段挂 body[data-we-glass-page] ⇒ 引擎没开时不动原样。
-      'body[data-we-glass-page] .meme-picker{background-color:var(--dsw-specific-input-major,var(--dsw-alias-bg-layer-1));background-image:linear-gradient(180deg,rgba(255,255,255,0.16),rgba(255,255,255,0.05) 38%,rgba(255,255,255,0.02));-webkit-backdrop-filter:blur(var(--we-blur,16px)) saturate(var(--we-saturate,1.8)) brightness(var(--we-glass-brightness,1.04)) contrast(1.01);backdrop-filter:blur(var(--we-blur,16px)) saturate(var(--we-saturate,1.8)) brightness(var(--we-glass-brightness,1.04)) contrast(1.01);box-shadow:inset 0 1px 0 rgba(255,255,255,var(--we-glass-highlight,0.32)),inset 0 -1px 0 rgba(255,255,255,0.08),inset 0 0 0 0.5px rgba(255,255,255,0.08),0 12px 40px rgba(0,0,0,var(--we-glass-shadow,0.12))}',
+      // [patch-dsh-gengtu-glass-alpha] 面板底部那根玻璃滑杆。放面板里而不是只放设置页:
+      // 拖的时候面板就在眼前,松手就见效,不用切页面 —— 这也是它「看得见差别」的关键。
+      '.meme-picker .mp-glass{display:flex;align-items:center;gap:8px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px;margin-top:2px;font-size:11px;color:var(--dsw-alias-label-secondary)}',
+      '.meme-picker .mp-glass input[type=range]{flex:1;min-width:0;height:14px;accent-color:var(--dsw-alias-brand-primary,#4d6bfe)}',
+      '.meme-picker .mp-glass-val{min-width:36px;text-align:right;font-variant-numeric:tabular-nums}',
+      // [patch-dsh-meme-glass] 表情包弹层 = 与输入框同款玻璃背景板(配方直接抄 dsh-plugin-wallpaper-engine):
+      // 底色 = 主题底色@可读性下限 + 玻璃色@玻璃透明度,跟它给 --dsw-alias-bg-layer-* 用的那张表同源
+      // (见 dsh-plugin-wallpaper-engine/lib/client.js:1647-1655),层权重取 1.0(与 layer-2 同档)。
+      // 2026-10-12 第二版:第一版读的是 --dsw-specific-input-major,那个令牌**不在壁纸引擎接管的名单里**
+      // (它接管的是 --dsw-alias-bg-layer-1/2/3、--dsw-alias-bg-overlay 那一串),于是只能把一块实色调淡,
+      // 看着「跟没变一样」。现在改读它自己的三件套:玻璃色 --we-surface-tint-light、玻璃透明度
+      // --we-glass-alpha、可读性下限 --we-readability-floor / --we-readability-base —— 装了引擎就跟着
+      // 全局那根「玻璃」滑杆联动,没装则整条退化成宿主面板色(观感与原来一致);全带 fallback,不是硬依赖。
+      // 最外层再套一道 color-mix,读 --meme-glass-alpha(面板底部那根滑杆写的,
+      // 见 [patch-dsh-gengtu-glass-alpha]),默认 100% = 不多透一分。
+      '.meme-picker,.meme-picker .mp-hover{background-color:color-mix(in srgb,color-mix(in srgb,var(--we-readability-base,var(--dsw-alias-bg-layer-1)) calc(var(--we-readability-floor,0) * 100%),color-mix(in srgb,var(--we-surface-tint-light,#ffffff) calc(var(--we-glass-alpha,0.5) * 100%),transparent) calc((1 - var(--we-readability-floor,0)) * 100%)) var(--meme-glass-alpha,100%),transparent);background-image:linear-gradient(180deg,rgba(255,255,255,0.16),rgba(255,255,255,0.05) 38%,rgba(255,255,255,0.02));-webkit-backdrop-filter:blur(var(--meme-glass-blur,var(--we-blur,16px))) saturate(var(--we-saturate,1.8)) brightness(var(--we-glass-brightness,1.04)) contrast(1.01);backdrop-filter:blur(var(--meme-glass-blur,var(--we-blur,16px))) saturate(var(--we-saturate,1.8)) brightness(var(--we-glass-brightness,1.04)) contrast(1.01);box-shadow:inset 0 1px 0 rgba(255,255,255,var(--we-glass-highlight,0.32)),inset 0 -1px 0 rgba(255,255,255,0.08),inset 0 0 0 0.5px rgba(255,255,255,0.08),0 12px 40px rgba(0,0,0,var(--we-glass-shadow,0.12))}',
     ].join('')
 
     /**
@@ -1898,6 +1973,27 @@ window.__ModuleLoader__.load({
               },
             }, '加载中…')
             : null),
+        // [patch-dsh-gengtu-glass-alpha] 玻璃透明度滑杆。初值必须现读(readGlassAlpha),
+        // 不能引用 MemePanel 里那个 glassAlpha state —— MemeBoard 和 MemePanel 是 factory 里
+        // 两个平级组件,互相看不见对方作用域,引了就是渲染期 ReferenceError、整个面板打不开。
+        // (这个坑犯过第三次了:前两次是 memeCodeFromRow 死在 onClick、memeApiStatus 死在 render。)
+        // 所以这里一个 state 都不用:初值从本机读,改的时候直接写变量 + 就地改那行数字。
+        h('div', { className: 'mp-glass' },
+          h('span', null, '玻璃'),
+          h('input', {
+            type: 'range', min: 20, max: 100, step: 2, defaultValue: readGlassAlpha(),
+            title: '面板的玻璃透明度:越低越透',
+            onChange: (e) => {
+              const n = parseInt(e.target.value, 10)
+              if (!Number.isFinite(n)) return
+              writeGlassAlpha(n)
+              const holder = e.target.parentNode
+              const val = holder && holder.querySelector ? holder.querySelector('.mp-glass-val') : null
+              if (val) val.textContent = n + '%'
+            },
+          }),
+          h('span', { className: 'mp-glass-val' }, String(readGlassAlpha()) + '%'),
+        ),
       )
     }
 
@@ -2321,9 +2417,14 @@ installMemeZoom();
 // [data-meme-pending]** 生效——真配不上图（降级成描述文字）时没有任何 img，原文照旧可见，
 // 不会出现「空气泡」。ghost（display:none，存着原文供别的插件比对）不受影响。
 ;(() => {
-  if (document.getElementById('dsh-meme-noflip-css')) return
+  // [patch-dsh-meme-spanwrap 2026-10-20] 这条样式表改过（span 选择器补了
+  // :not(:has([data-meme-img]))）。原来靠 id 守卫「有就不重发」，改成 id 带版本号 +
+  // 顺手删掉旧版，这样热替换 bundle 也能立刻生效，不用非得整页刷新。
+  if (document.getElementById('dsh-meme-noflip-css-v2')) return
+  const staleNoflip = document.getElementById('dsh-meme-noflip-css')
+  if (staleNoflip) staleNoflip.remove()
   const st = document.createElement('style')
-  st.id = 'dsh-meme-noflip-css'
+  st.id = 'dsh-meme-noflip-css-v2'
   // [patch-dsh-meme-notext 2026-10-12] 用户又报「点了表情包，图不立马出来，先出现一串给 ai 的
   // 注释」——上一版的 `img[data-meme-hide-raw]~span` 要求「注释元素是 img 的**兄弟**」。可落点
   // 补丁把 img 提到气泡层之后，注释文本往往被宿主缠在 <p>/<span> 里（img 和它同父不同层），
@@ -2334,7 +2435,14 @@ installMemeZoom();
   st.textContent = [
     'img[data-meme-hide-raw]~span:not([data-meme-hidden]),img[data-meme-hide-raw]~div:not([data-meme-hidden]),img[data-meme-hide-raw]~p:not([data-meme-hidden]){display:none!important}',
     'img[data-meme-hide-raw]~*:not([data-meme-hidden]):not(img):not([data-meme-img]){display:none!important}',
-    '[data-meme-bare]:has(img[data-meme-hide-raw]) span:not([data-meme-hidden]),[data-meme-bare]:has(img[data-meme-hide-raw]) div:not([data-meme-hidden]):not(:has([data-meme-img])),[data-meme-bare]:has(img[data-meme-hide-raw]) p:not([data-meme-hidden]){display:none!important}',
+    // [patch-dsh-meme-spanwrap 2026-10-20] 0.2.1 的用户气泡多套了两层 span：
+    //   div.cJsG2q_bubble > span.Jj6vTG_root > span[data-slot=conversation.user.text.node] > img
+    // 落点补丁把图放到「被掏空那个文本 run 的父层」，也就是 data-slot 那层 span 里。
+    // 原来这条规则收掉气泡里**所有** span（没有 div/p 那种 :not(:has(img)) 排除），
+    // 于是连装着图的那层一起 display:none —— 图上 DOM 存在、屏幕上却空白，
+    // 只有用户自己发的纯表情消息会踩到（助手行是 div/p 结构，一直没事）。
+    // 实测证据：data-meme-bare="1" 的气泡里 img 在，但外层 span 被这条规则收掉。
+    '[data-meme-bare]:has(img[data-meme-hide-raw]) span:not([data-meme-hidden]):not(:has([data-meme-img])),[data-meme-bare]:has(img[data-meme-hide-raw]) div:not([data-meme-hidden]):not(:has([data-meme-img])),[data-meme-bare]:has(img[data-meme-hide-raw]) p:not([data-meme-hidden]):not(:has([data-meme-img])){display:none!important}',
     // 配图中：0.25s 兜底（原 4s）。结论早知道早好——图 200ms 内就回来了，等 4 秒没有意义；
     // 真配不上时 250ms 后原文自己回来，气泡也不会空着。
     '[data-meme-pending] span:not([data-meme-hidden]){display:none!important;animation:dsh-meme-noflip-show .25s step-end 1 forwards}',
@@ -2410,12 +2518,41 @@ const installMemeHoverPreview = () => {
 }
 installMemeHoverPreview();
 
+// [patch-dsh-meme-settle 2026-10-20] 用户消息的行在提交瞬间会被宿主整行重渲染一次
+// （本地回显 → 定稿）。装饰器如果抢在那之前画，成果就被重渲染吃掉：img 没了、ghost 还在、
+// 空层还挂着 display:none ⇒ 气泡只剩个头像（2026-10-20 用户截图）。助手行是一次性渲染，
+// 所以只有用户自己发的那条会中招。这里给用户/steering 行加一道闸：同一行连续两次扫描
+// 文本快照一致、且隔了 MEME_SETTLE_MS，才允许装饰；期间用一个超时兜底再扫一次。
+const MEME_SETTLE = new WeakMap()
+const MEME_SETTLE_MS = 400
+let memeSettleTimer = 0
+
 const decorateMemeText = () => {
         let degraded = false // [patch-dsh-meme-index]
         // [patch-dsh-meme-pincode] 认不出的稳定码只允许触发一次索引重拉（拉完就是第二遍），
         // 免得每轮扫描都因为一条早被删掉的旧消息反复打接口。
         const recheck = memeIndexNeedsRecheck
         if (recheck) memeIndexNeedsRecheck = false
+        // 用户行「等它站稳」的记账（见上方 MEME_SETTLE 的说明）
+        const settleNow = Date.now()
+        for (const row of document.querySelectorAll('[data-chat-flow-kind="user"],[data-chat-flow-kind="steering"]')) {
+          const snapshot = row.textContent || ''
+          const seen = MEME_SETTLE.get(row)
+          if (seen === undefined || seen.snapshot !== snapshot) {
+            MEME_SETTLE.set(row, { snapshot, at: settleNow })
+            row.dataset.memeWait = '1'
+            if (!memeSettleTimer) {
+              memeSettleTimer = setTimeout(() => {
+                memeSettleTimer = 0
+                try { decorateMemeText() } catch (error) {
+                  console.warn('[dsh-expression] 定稿后重扫失败:', error && error.message ? error.message : error)
+                }
+              }, MEME_SETTLE_MS + 80)
+            }
+          } else if (settleNow - seen.at >= MEME_SETTLE_MS) {
+            delete row.dataset.memeWait
+          }
+        }
         // 宿主重渲染(切语言/切主题/HMR)会让 React 对纯文本 children 走 textContent 覆写:
         // 注入的 img 和 ghost 一起被抹掉、原文裸露,而 data-meme-decorated 在元素属性上,
         // 覆写不影响它 → 标记还在、注入已不在,下面的 acceptNode 见标记就永久跳过,图再也
@@ -2436,7 +2573,27 @@ const decorateMemeText = () => {
             onlyGhosts = false
             break
           }
-          if (!el.querySelector('img[data-meme-img]') && onlyGhosts) delete el.dataset.memeDecorated
+          // [patch-dsh-meme-stale 2026-10-20] 0.2.1 上「自己发出去的那条」永远不出图：用户提交
+          // 表情时先渲染一次本地回显，装饰器在那儿把 img 插好、原文收进 ghost、空层挂上
+          // memeEmpty；紧接着宿主把这一行定稿重渲染，img 被抹掉，ghost 留在原地 ⇒ 气泡里
+          // 一个字、一张图都没有，只剩个头像（2026-10-20 用户截图确认就是这个形态）。
+          // 所以判据不能只看这个元素有没有 img（正常装饰时 img 本来就被搬到气泡外面了），
+          // 要看**整行**：整行已经没有 img[data-meme-img]，说明这一份装饰成果被宿主吃了 ——
+          // 把 ghost 里的原文摊回普通文本、摘掉标记、撤掉空层隐藏，本轮扫描重新画一遍。
+          // 降级装饰（没图、但明确显示着描述文字）带 memeDegradedAt，不在这里处理，
+          // 免得索引没变时每轮扫描都白重写一次 DOM。
+          const memeRow = el.closest('[data-chat-flow],[data-chat-flow-key]')
+          const rowHasImg = memeRow !== null && memeRow.querySelector('img[data-meme-img]') !== null
+          if (!rowHasImg && !el.dataset.memeDegradedAt) {
+            for (const ghost of el.querySelectorAll('[data-meme-hidden]')) {
+              ghost.replaceWith(document.createTextNode(ghost.textContent || ''))
+            }
+            delete el.dataset.memeDecorated
+            if (el.dataset.memeEmpty) {
+              delete el.dataset.memeEmpty
+              el.style.display = ''
+            }
+          }
           // [patch-dsh-meme-index] 降级装饰（只有 ghost、没图）是「当时索引里没有这张」的产物。
           // 索引一旦重拉过就给它一次重试机会：ghost 里装着原文标记，textContent 拼起来与
           // 替换前逐字一致，还原成裸文本让本轮扫描重新处理即可。只在「元素子节点除了 ghost
@@ -2479,6 +2636,8 @@ const decorateMemeText = () => {
             // 老版宿主都没有,加了纯增益。
             if (parent.closest('[data-chat-flow-kind="turn-process"]')) return NodeFilter.FILTER_REJECT
             if (flowEl.getAttribute('data-chat-group-key') !== null) return NodeFilter.FILTER_REJECT
+            // [patch-dsh-meme-settle] 用户行还没站稳（440ms 内刚变过），这一轮先别碰它
+            if (flowEl.getAttribute('data-meme-wait') !== null) return NodeFilter.FILTER_REJECT
             return MEME_TEXT_TEST.test(node.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
           },
         })

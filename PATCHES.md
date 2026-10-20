@@ -453,3 +453,38 @@ token / 跨站 Origin 403），`tools/_diag-live.mjs` 原有接口体检全绿�
   明确表示**不修** —— 160px 的梗图看不清（「在小了就看不清了」），保留原图尺寸。将来若有人把这当成
   bug 顺手"修好"，等于把用户的图全变成小图，属于**倒退**，先问再说。
 
+## 2026-10-20 桌面端升到 0.2.1-rc.2：自己发的表情包只剩一个头像
+
+**症状**：助手发的梗图正常出图；用户自己发的那条**只剩一个头像**，气泡里字和图都没有。
+重启桌面端、硬刷新都一样。助手行好、用户行坏，是唯一稳定的分界。
+
+**怎么定位的**：让用户在 DevTools 里把最后一条 `data-chat-flow-kind="user"` 的 outerHTML 抓出来
+（`copy(...)` 进剪贴板再粘回来）。结果是 `imgs: 1` —— 图**在 DOM 里**，藏它的是 CSS：
+
+    <div class="cJsG2q_bubble" data-meme-bare="1">
+      <span class="Jj6vTG_root"><span data-slot="conversation.user.text.node">
+        <span data-meme-decorated data-meme-empty style="display:none">…ghost 原文…</span>
+        <img data-meme-img src="dsh-app://app/dsh-memes/…">
+      </span></span>
+    </div>
+
+0.2.1 的用户气泡比老版本多套了两层 `<span>`，图正好落在里面，而
+`[data-meme-bare]:has(img[data-meme-hide-raw]) span:not([data-meme-hidden])` 这条会把
+**气泡里所有 span** 都 `display:none`（div / p 那两支本来就有 `:not(:has([data-meme-img]))`
+排除，只有 span 漏了）⇒ 图跟着被藏掉。助手行是 div/p 结构，所以一直没踩到。
+
+**改动**（都在 `client.js`，无 `index.js` 变更）：
+- `[patch-dsh-meme-spanwrap]`：span / p 两支补 `:not(:has([data-meme-img]))`；样式表 id 升到
+  `dsh-meme-noflip-css-v2` 并先删旧节点 —— 旧 id 守卫会让「热替换 bundle 之后新规则永远不生效」，
+  第一版修完没效果就是踩了这个，白折腾一轮。
+- `[patch-dsh-meme-stale]`：装饰成果被宿主重渲染吃掉时（整行已无 `img[data-meme-img]`），把 ghost
+  里的原文摊回普通文本、摘标记、撤掉空层隐藏，让下一轮重画。
+- `[patch-dsh-meme-settle]`：`user` / `steering` 行连续两次扫描文本快照一致、间隔 ≥400ms 才允许
+  装饰，避开「本地回显 → 定稿」那次重渲染（带 440ms 兜底重扫）。
+- ⚠️ 后两条的因果**没被证实**：真正致命的是 span 那条 CSS。它们留着是因为安全、且覆盖
+  「宿主抹掉装饰成果」那类情况，但别以为没有它们就不行 —— 下次再遇到类似症状，先看真实 DOM，
+  别照这三条瞎猜（这一轮就是这么绕了四五次的）。
+
+**备份**：`dsh-gengtu备份\dsh-gengtu-client-1020-0941.js`（改动前的原文件）。
+
+
