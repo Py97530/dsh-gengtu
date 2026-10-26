@@ -42,7 +42,7 @@ window.__ModuleLoader__.load({
       '.meme-panel .btn-primary:hover{background:var(--dsw-alias-button-primary-hover);border-color:var(--dsw-alias-button-primary-hover)}',
       '.meme-panel .notice{padding:7px 12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);font-size:12px;color:var(--dsw-alias-label-secondary)}',
       '.meme-panel .meme-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}',
-      '.meme-panel .meme-card{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1);display:flex;flex-direction:column;box-shadow:0 1px 3px rgba(0,0,0,.06);transition:transform .12s ease,box-shadow .12s ease}',
+      '.meme-panel .meme-card{position:relative;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1);display:flex;flex-direction:column;box-shadow:0 1px 3px rgba(0,0,0,.06);transition:transform .12s ease,box-shadow .12s ease}',
       '.meme-panel .meme-card:hover{transform:translateY(-2px);box-shadow:0 5px 14px rgba(0,0,0,.12)}',
       '.meme-panel .meme-thumb{width:100%;height:120px;background-size:contain;background-position:center center;background-repeat:no-repeat;background-color:var(--dsw-alias-bg-base)}',
       '.meme-modal .meme-shot{width:100%;height:220px;border-radius:8px;background-size:contain;background-position:center center;background-repeat:no-repeat;background-color:var(--dsw-alias-bg-base)}',
@@ -52,6 +52,9 @@ window.__ModuleLoader__.load({
       '.meme-panel .acts{display:flex;gap:6px;margin-top:auto}',
       '.meme-panel .acts button{padding:3px 10px;font-size:12px;border-radius:6px}',
       '.meme-panel .acts button.danger:hover{border-color:#e5484d;color:#e5484d}',
+      // [patch-dsh-gengtu-bulkdel 2026-10-26] 批量删除：选中态描边 + 右上角序号
+      '.meme-panel .meme-card.picked{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-brand-primary) 40%,transparent)}',
+      '.meme-panel .meme-pick{position:absolute;top:6px;right:6px;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:var(--dsw-alias-brand-primary);color:#fff;font-size:11px;line-height:20px;text-align:center;font-weight:600;z-index:2}',
       '.meme-panel .empty{color:var(--dsw-alias-label-secondary);padding:24px;text-align:center}',
       '.meme-modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px}',
       '.meme-modal{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:16px;width:340px;max-width:100%;box-shadow:0 10px 36px rgba(0,0,0,.35);display:flex;flex-direction:column;gap:10px}',
@@ -236,6 +239,9 @@ window.__ModuleLoader__.load({
       const [q, setQ] = React.useState('')
       const [tagFilter, setTagFilter] = React.useState('')
       const [notice, setNotice] = React.useState('')
+      // [patch-dsh-gengtu-bulkdel 2026-10-26] 批量删除：bulkMode 开的时候点卡片是勾选、不是编辑
+      const [bulkMode, setBulkMode] = React.useState(false)
+      const [bulkPick, setBulkPick] = React.useState([])
       const [busy, setBusy] = React.useState(false)
       const [edit, setEdit] = React.useState(null)
       const [upTag, setUpTag] = React.useState('')
@@ -870,6 +876,39 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // [patch-dsh-gengtu-bulkdel 2026-10-26] 批量删除的三个动作。
+      // 成功时只摘掉本地列表里那几格（和单删同一个理由：全量 load() 会把整库重读一遍，979 张≈5.6 秒）。
+      const toggleBulk = (path) => setBulkPick((cur) => (cur.includes(path) ? cur.filter((x) => x !== path) : cur.concat(path)))
+      const doBulkDelete = async (paths) => {
+        try {
+          const res = await apiPost({ op: 'deleteMany', paths })
+          if (res && res.ok) {
+            const failedPaths = new Set((res.failed || []).map((f) => f.path))
+            const gone = new Set(paths.filter((p) => !failedPaths.has(p)))
+            setMemes((rows) => rows.filter((x) => !gone.has(x.path)))
+            setTotal((n) => Math.max(0, (Number(n) || 0) - gone.size))
+            setNotice('已删除 ' + gone.size + ' 张' + (failedPaths.size ? '，失败 ' + failedPaths.size + ' 张' : ''))
+            setBulkPick([])
+            setBulkMode(false)
+          } else {
+            setNotice('批量删除失败: ' + ((res && res.error) || ''))
+            await load(q, tagFilter)
+          }
+        } catch (error) {
+          setNotice('批量删除失败: ' + (error && error.message ? error.message : String(error)))
+          await load(q, tagFilter)
+        }
+      }
+      const onBulkDelete = () => {
+        if (!bulkPick.length) return
+        setConfirmBox({
+          title: '批量删除',
+          lines: ['确认删除选中的 ' + bulkPick.length + ' 张表情包？', '不可恢复。'],
+          confirmLabel: '删除 ' + bulkPick.length + ' 张',
+          onConfirm: () => doBulkDelete(bulkPick.slice()),
+        })
+      }
+
       const searchInput = h('input', {
         type: 'text',
         placeholder: '搜索描述/关键词',
@@ -895,18 +934,29 @@ window.__ModuleLoader__.load({
       })
 
       const curPack = packs.find((p) => p.id === packId) || null
-      const cards = memes.map((m) => h('div', { key: m.path, className: 'meme-card' },
-        // 用背景层而不是 <img>:宿主对 img 的全局样式会把图挤到左边(封面那次踩过)
-        h('div', { className: 'meme-thumb', ref: (el) => { if (el) memeLazyBg(el, m.url) }, 'data-meme-src': m.url, 'data-meme-cap': m.caption || m.file_name }),
-        h('div', { className: 'meta' },
-          h('div', { className: 'tag' }, tagZh(m.tag)),
-          h('div', { className: 'cap' }, m.caption || m.file_name),
-          h('div', { className: 'acts' },
-            h('button', { onClick: () => setEdit({ path: m.path, tag: m.tag, caption: m.caption || '', keywords: m.keywords || '' }) }, '编辑'),
-            h('button', { className: 'danger', onClick: () => onDelete(m) }, '删除'),
+      // [patch-dsh-gengtu-bulkdel 2026-10-26] 批量模式下：整张卡是勾选开关，序号角标显示勾选顺序，
+      // 编辑/删除按钮先藏起来（不然点删除会误触单删确认框）。
+      const cards = memes.map((m) => {
+        const pickedOrder = bulkMode ? bulkPick.indexOf(m.path) : -1
+        return h('div', {
+          key: m.path,
+          className: 'meme-card' + (pickedOrder >= 0 ? ' picked' : ''),
+          style: bulkMode ? { cursor: 'pointer' } : undefined,
+          onClick: bulkMode ? () => toggleBulk(m.path) : undefined,
+        },
+          // 用背景层而不是 <img>:宿主对 img 的全局样式会把图挤到左边(封面那次踩过)
+          h('div', { className: 'meme-thumb', ref: (el) => { if (el) memeLazyBg(el, m.url) }, 'data-meme-src': m.url, 'data-meme-cap': m.caption || m.file_name }),
+          pickedOrder >= 0 ? h('span', { className: 'meme-pick' }, String(pickedOrder + 1)) : null,
+          h('div', { className: 'meta' },
+            h('div', { className: 'tag' }, tagZh(m.tag)),
+            h('div', { className: 'cap' }, m.caption || m.file_name),
+            bulkMode ? null : h('div', { className: 'acts' },
+              h('button', { onClick: () => setEdit({ path: m.path, tag: m.tag, caption: m.caption || '', keywords: m.keywords || '' }) }, '编辑'),
+              h('button', { className: 'danger', onClick: () => onDelete(m) }, '删除'),
+            ),
           ),
-        ),
-      ))
+        )
+      })
 
       // 市场卡片:发现 = 目录条目;图库页 = 已安装图库(订阅记录 + 扫描到的本地图库)。搜索按 空格分词 全命中。
       const mkQuery = remoteQuery.trim().toLowerCase()
@@ -1058,7 +1108,18 @@ window.__ModuleLoader__.load({
               h('button', { className: 'btn-primary', onClick: () => setUploadOpen(true) }, '上传表情包'),
               tagSelect,
               h('button', { onClick: () => load(q, tagFilter), disabled: busy }, '搜索'),
+              // [patch-dsh-gengtu-bulkdel 2026-10-26] 批量删除开关
+              h('button', {
+                className: bulkMode ? 'btn-primary' : '',
+                onClick: () => { setBulkMode(!bulkMode); setBulkPick([]); setNotice('') },
+              }, bulkMode ? '退出批量' : '批量删除'),
             ),
+            bulkMode ? h('div', { className: 'row', style: { gap: 8 } },
+              h('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '点图勾选，已选 ' + bulkPick.length + ' 张'),
+              h('button', { onClick: () => setBulkPick(memes.map((m) => m.path)) }, '全选本页(' + memes.length + ')'),
+              h('button', { onClick: () => setBulkPick([]), disabled: !bulkPick.length }, '清空'),
+              bulkPick.length ? h('button', { className: 'btn-primary', onClick: onBulkDelete }, '删除选中(' + bulkPick.length + ')') : null,
+            ) : null,
             notice ? h('div', { className: 'notice' }, notice) : null,
             memes.length === 0 && !busy
               ? h('div', { className: 'empty' }, '没有匹配的表情包')

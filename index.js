@@ -210,7 +210,7 @@ export function apply(ctx, config) {
   // [patch-dsh-meme-auth 2026-10-12] update/delete/upload/recognize 以前不在名单里，带一个
   // x-dsh-meme: 1 就能改任意一行 caption、删任意一张图（安全评审 VULN-2 实测：请求全都进了
   // 业务逻辑，只差一个合法路径/图片体）。删整包要令牌、删单张不要，这种粒度是反的。
-  const HIGH_RISK_OPS = new Set(['setMemeRoot', 'setPacksDir', 'setRemoteDirUrl', 'installRemoteArchive', 'importMemePack', 'deleteMemePack', 'deleteTag', 'setCompanionPrompt', 'browse', 'createMemePack', 'update', 'delete', 'upload', 'recognize'])
+  const HIGH_RISK_OPS = new Set(['setMemeRoot', 'setPacksDir', 'setRemoteDirUrl', 'installRemoteArchive', 'importMemePack', 'deleteMemePack', 'deleteTag', 'setCompanionPrompt', 'browse', 'createMemePack', 'update', 'delete', 'deleteMany', 'upload', 'recognize'])
   const tokenFile = join(dshHome(), '.dsh', 'dsh-expression.token')
   let apiToken = ''
   try { apiToken = readFileSync(tokenFile, 'utf8').trim() } catch (e) {}
@@ -1427,6 +1427,30 @@ export function apply(ctx, config) {
             adminDb.prepare('DELETE FROM memes WHERE path = ?').run(path)
             try { unlinkSync(delAbs) } catch { /* 文件已不存在 */ }
             json(res, { ok: true })
+          } else if (op === 'deleteMany') {
+            // [patch-dsh-gengtu-bulkdel 2026-10-26] 批量删除：一次请求删多张，省掉 N 次往返。
+            // 每张都走和单删完全相同的两道门（主键存在性 + insideMemes 路径守卫）；
+            // 单张失败只记进 failed、不中断其余 —— 勾的一批里夹着早已删掉的图是常态。
+            const list = Array.isArray(body.paths) ? body.paths.map((x) => String(x || '')).filter(Boolean) : []
+            if (!list.length) throw new Error('没有选中任何表情包')
+            if (list.length > 500) throw new Error('一次最多删 500 张')
+            const hasRow = adminDb.prepare('SELECT tag FROM memes WHERE path = ?')
+            const delRow = adminDb.prepare('DELETE FROM memes WHERE path = ?')
+            let deleted = 0
+            const failed = []
+            for (const path of list) {
+              try {
+                if (!hasRow.get(path)) { failed.push({ path, error: '未知路径' }); continue }
+                const abs = insideMemes(memes.root, path) // [patch-dsh-meme-pathguard]
+                if (!abs) { failed.push({ path, error: '非法路径' }); continue }
+                delRow.run(path)
+                try { unlinkSync(abs) } catch { /* 文件已不存在 */ }
+                deleted += 1
+              } catch (error) {
+                failed.push({ path, error: error && error.message ? error.message : String(error) })
+              }
+            }
+            json(res, { ok: true, deleted, failed })
           } else if (op === 'deleteTag') {
             const tag = String(body.tag || '').trim().toLowerCase()
             if (!tag || !validTagRe.test(tag)) throw new Error('tag 只能是小写字母/数字/-/_')

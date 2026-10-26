@@ -41,7 +41,9 @@
   .notice.err { color: var(--err); border-color: var(--err); }
   .notice.ok { color: var(--ok); border-color: var(--ok); }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
-  .card { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); display: flex; flex-direction: column; }
+  .card { position: relative; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); display: flex; flex-direction: column; }
+  .card.picked { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(79,110,247,.35); cursor: pointer; }
+  .pick-badge { position: absolute; top: 6px; right: 6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--accent); color: #fff; font-size: 11px; line-height: 20px; text-align: center; font-weight: 600; }
   .card img { width: 100%; height: 120px; object-fit: cover; display: block; background: var(--bg); }
   .meta { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; min-height: 84px; }
   .tag { font-size: 11px; color: var(--accent); text-transform: lowercase; }
@@ -60,6 +62,7 @@
     <select id="tagFilter"><option value="">全部分类</option></select>
     <button id="searchBtn">搜索</button>
     <button id="resetBtn">重置</button>
+    <button id="bulkBtn">批量删除</button>
     <span class="total" id="total"></span>
   </div>
   <div class="row">
@@ -68,6 +71,7 @@
     <input type="file" id="fileInput" accept="image/*" style="display:none">
   </div>
   <div id="notice"></div>
+  <div class="row" id="bulkbar" style="display:none"></div>
   <div class="grid" id="grid"></div>
   <div class="api">数据与 selfloom 图库同源(index.db + memes/ 目录);API: GET/POST /dsh-memes-api</div>
 </div>
@@ -75,6 +79,9 @@
 'use strict'
 const $ = (id) => document.getElementById(id)
 let memes = [], tags = [], editing = null
+// [patch-dsh-gengtu-bulkdel 2026-10-26] 批量删除：bulkMode 开时点卡片是勾选
+let bulkMode = false
+let bulkPick = new Set()
 
 function notice(msg, kind) {
   const el = $('notice')
@@ -138,19 +145,86 @@ async function load() {
   render()
 }
 
+function renderBulkbar() {
+  const bar = $('bulkbar')
+  bar.innerHTML = ''
+  if (!bulkMode) { bar.style.display = 'none'; return }
+  bar.style.display = 'flex'
+  const info = document.createElement('span')
+  info.className = 'total'
+  info.textContent = '点图勾选，已选 ' + bulkPick.size + ' 张'
+  bar.appendChild(info)
+  const all = document.createElement('button')
+  all.textContent = '全选本页(' + memes.length + ')'
+  all.onclick = () => { for (const m of memes) bulkPick.add(m.path); render() }
+  bar.appendChild(all)
+  const none = document.createElement('button')
+  none.textContent = '清空'
+  none.disabled = bulkPick.size === 0
+  none.onclick = () => { bulkPick.clear(); render() }
+  bar.appendChild(none)
+  if (bulkPick.size > 0) {
+    const del = document.createElement('button')
+    del.className = 'primary'
+    del.textContent = '删除选中(' + bulkPick.size + ')'
+    del.onclick = doBulkDelete
+    bar.appendChild(del)
+  }
+}
+
+async function doBulkDelete() {
+  const paths = [...bulkPick]
+  if (!paths.length) return
+  if (!window.confirm('确认删除选中的 ' + paths.length + ' 张表情包？不可恢复。')) return
+  const res = await apiPost({ op: 'deleteMany', paths })
+  if (res && res.ok) {
+    const failed = new Set((res.failed || []).map((f) => f.path))
+    bulkPick.clear()
+    setBulkModeUI(false)
+    notice('已删除 ' + (res.deleted || 0) + ' 张' + (failed.size ? '，失败 ' + failed.size + ' 张' : ''), 'ok')
+    load()
+  } else {
+    notice('批量删除失败: ' + ((res && res.error) || ''), 'err')
+    load()
+  }
+}
+
+function setBulkModeUI(on) {
+  bulkMode = on
+  $('bulkBtn').textContent = on ? '退出批量' : '批量删除'
+  if (on) $('bulkBtn').classList.add('primary')
+  else $('bulkBtn').classList.remove('primary')
+  render()
+}
+
 function render() {
   const grid = $('grid')
+  renderBulkbar()
   if (memes.length === 0) {
     grid.innerHTML = '<div class="empty">没有匹配的表情包</div>'
     return
   }
   grid.innerHTML = ''
   for (const m of memes) {
+    const picked = bulkMode && bulkPick.has(m.path)
     const card = document.createElement('div')
-    card.className = 'card'
+    card.className = 'card' + (picked ? ' picked' : '')
+    if (bulkMode) {
+      card.onclick = () => {
+        if (bulkPick.has(m.path)) bulkPick.delete(m.path)
+        else bulkPick.add(m.path)
+        render()
+      }
+    }
     const img = document.createElement('img')
     img.src = m.url || ''; img.alt = m.path; img.loading = 'lazy'
     card.appendChild(img)
+    if (picked) {
+      const badge = document.createElement('span')
+      badge.className = 'pick-badge'
+      badge.textContent = String([...bulkPick].indexOf(m.path) + 1)
+      card.appendChild(badge)
+    }
     const meta = document.createElement('div')
     meta.className = 'meta'
     if (editing === m.path) {
@@ -175,18 +249,21 @@ function render() {
     } else {
       const tag = document.createElement('div'); tag.className = 'tag'; tag.textContent = m.tag
       const cap = document.createElement('div'); cap.className = 'cap'; cap.textContent = m.caption || m.file_name
-      const acts = document.createElement('div'); acts.className = 'acts'
-      const edit = document.createElement('button'); edit.textContent = '编辑'
-      edit.onclick = () => { editing = m.path; render() }
-      const del = document.createElement('button'); del.textContent = '删除'
-      del.onclick = async () => {
-        if (!window.confirm('删除 ' + m.path + ' ?')) return
-        const res = await apiPost({ op: 'delete', path: m.path })
-        notice(res.ok ? '已删除' : '删除失败: ' + (res.error || ''), res.ok ? 'ok' : 'err')
-        load()
+      meta.append(tag, cap)
+      if (!bulkMode) {
+        const acts = document.createElement('div'); acts.className = 'acts'
+        const edit = document.createElement('button'); edit.textContent = '编辑'
+        edit.onclick = () => { editing = m.path; render() }
+        const del = document.createElement('button'); del.textContent = '删除'
+        del.onclick = async () => {
+          if (!window.confirm('删除 ' + m.path + ' ?')) return
+          const res = await apiPost({ op: 'delete', path: m.path })
+          notice(res.ok ? '已删除' : '删除失败: ' + (res.error || ''), res.ok ? 'ok' : 'err')
+          load()
+        }
+        acts.appendChild(edit); acts.appendChild(del)
+        meta.appendChild(acts)
       }
-      acts.appendChild(edit); acts.appendChild(del)
-      meta.append(tag, cap, acts)
     }
     card.appendChild(meta)
     grid.appendChild(card)
@@ -195,6 +272,7 @@ function render() {
 
 $('searchBtn').onclick = load
 $('resetBtn').onclick = () => { $('q').value = ''; $('tagFilter').value = ''; load() }
+$('bulkBtn').onclick = () => { bulkPick.clear(); setBulkModeUI(!bulkMode) }
 $('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') load() })
 $('uploadBtn').onclick = () => $('fileInput').click()
 $('fileInput').onchange = async (e) => {
